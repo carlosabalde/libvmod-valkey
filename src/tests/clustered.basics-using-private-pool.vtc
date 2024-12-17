@@ -6,20 +6,20 @@ server s1 {
 } -repeat 1 -start
 
 varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={""},
             period=0,
             connection_timeout=500,
             command_timeout=0);
 
-        new db = redis.db(
-            location="${redis_master1_ip}:${redis_master1_port}",
+        new db = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_port}",
             type=cluster,
             connection_timeout=500,
             connection_ttl=0,
@@ -31,14 +31,14 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
             sickness_ttl=0,
             ignore_slaves=false,
             max_cluster_hops=16);
-        db.add_server("${redis_master2_ip}:${redis_master2_port}", cluster);
-        db.add_server("${redis_master3_ip}:${redis_master3_port}", cluster);
+        db.add_server("${valkey_master2_ip}:${valkey_master2_port}", cluster);
+        db.add_server("${valkey_master3_ip}:${valkey_master3_port}", cluster);
     }
 
     sub vcl_deliver {
         # SET.
         db.command("SET");
-        db.push("${redis_key_in_master1}");
+        db.push("${valkey_key_in_master1}");
         db.push("hello");
         db.execute(true);
         if (db.reply_is_status()) {
@@ -47,7 +47,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # SETEX.
         db.command("SETEX");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master2}");
         db.push("3600");
         db.push("Hello world!");
         db.execute(true);
@@ -57,7 +57,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # GET.
         db.command("GET");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master2}");
         db.execute(true);
         if (db.reply_is_string()) {
             set resp.http.Reply-3 = db.get_string_reply();
@@ -65,7 +65,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # DEL.
         db.command("DEL");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master2}");
         db.execute(true);
         if (db.reply_is_integer()) {
             set resp.http.Reply-4 = db.get_integer_reply();
@@ -73,8 +73,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # MGET.
         db.command("MGET");
-        db.push("${redis_key_in_master1}");
-        db.push("{${redis_key_in_master1}}:other");
+        db.push("${valkey_key_in_master1}");
+        db.push("{${valkey_key_in_master1}}:other");
         db.execute(true);
         if (db.reply_is_array()) {
             set resp.http.Reply-5-Length = db.get_array_reply_length();
@@ -84,8 +84,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # MGET (CROSSSLOT).
         db.command("MGET");
-        db.push("${redis_key_in_master1}");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master1}");
+        db.push("${valkey_key_in_master2}");
         db.execute(true);
         if (db.reply_is_error()) {
             set resp.http.Reply-6 = "1";
@@ -93,7 +93,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # HMSET.
         db.command("HMSET");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master2}");
         db.push("field1");
         db.push("Hello world!");
         db.push("field2");
@@ -105,7 +105,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # HMGET.
         db.command("HGET");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master2}");
         db.push("field1");
         db.execute(true);
         if (db.reply_is_string()) {
@@ -114,7 +114,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # INCR.
         db.command("INCR");
-        db.push("${redis_key_in_master1}");
+        db.push("${valkey_key_in_master1}");
         db.execute(true);
         if (db.reply_is_error()) {
             set resp.http.Reply-9 = db.get_error_reply();
@@ -128,8 +128,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
         db.command("EVAL");
         db.push(req.http.Script);
         db.push("2");
-        db.push("${redis_key_in_master1}");
-        db.push("{${redis_key_in_master1}}:other");
+        db.push("${valkey_key_in_master1}");
+        db.push("{${valkey_key_in_master1}}:other");
         db.push("Atomic!");
         db.execute(true);
         if (db.reply_is_nil()) {
@@ -140,8 +140,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
         db.command("EVAL");
         db.push(req.http.Script);
         db.push("2");
-        db.push("${redis_key_in_master1}");
-        db.push("{${redis_key_in_master1}}:other");
+        db.push("${valkey_key_in_master1}");
+        db.push("{${valkey_key_in_master1}}:other");
         db.push("Atomic x 2!");
         db.execute(true);
         if (db.reply_is_nil()) {
@@ -156,8 +156,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
         db.command("EVAL");
         db.push(req.http.Script);
         db.push("2");
-        db.push("${redis_key_in_master1}");
-        db.push("${redis_key_in_master2}");
+        db.push("${valkey_key_in_master1}");
+        db.push("${valkey_key_in_master2}");
         db.push("Atomic!");
         db.execute(true);
         if (db.reply_is_error()) {
@@ -166,7 +166,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # GET.
         db.command("GET");
-        db.push("${redis_key_in_master1}");
+        db.push("${valkey_key_in_master1}");
         db.execute(true);
         if (db.reply_is_string()) {
             set resp.http.Reply-13 = db.get_string_reply();

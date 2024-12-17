@@ -5,9 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
-#include <hiredis/hiredis.h>
+#include <valkey/valkey.h>
 #ifdef TLS_ENABLED
-#include <hiredis/hiredis_ssl.h>
+#include <valkey/tls.h>
 #endif
 #include <arpa/inet.h>
 #ifdef __FreeBSD__
@@ -17,7 +17,7 @@
 #include "cache/cache.h"
 #include "vsb.h"
 #include "vcl.h"
-#include "vcc_redis_if.h"
+#include "vcc_valkey_if.h"
 
 #ifdef TLS_ENABLED
 #ifdef HAVE_LIBVARNISH_SSLHELPER
@@ -32,11 +32,11 @@
 static task_state_t *get_task_state(VRT_CTX, struct vmod_priv *task_priv, unsigned flush);
 static void flush_task_state(task_state_t *state);
 
-static enum REDIS_SERVER_ROLE type2role(VCL_ENUM type);
+static enum VALKEY_SERVER_ROLE type2role(VCL_ENUM type);
 
-static enum REDIS_PROTOCOL parse_protocol(VCL_ENUM protocol);
+static enum VALKEY_PROTOCOL parse_protocol(VCL_ENUM protocol);
 
-static const char *get_reply(VRT_CTX, redisReply *reply);
+static const char *get_reply(VRT_CTX, valkeyReply *reply);
 
 /******************************************************************************
  * VMOD EVENTS.
@@ -48,10 +48,10 @@ handle_vcl_load_event(VRT_CTX, struct vmod_priv *vcl_priv)
     // Initialize Varnish locks.
     if (vmod_state.locks.refs == 0) {
         vmod_state.locks.config = Lck_CreateClass(
-            &vmod_state.locks.vsc_seg, "redis.config");
+            &vmod_state.locks.vsc_seg, "valkey.config");
         AN(vmod_state.locks.config);
         vmod_state.locks.db = Lck_CreateClass(
-            &vmod_state.locks.vsc_seg, "redis.db");
+            &vmod_state.locks.vsc_seg, "valkey.db");
         AN(vmod_state.locks.db);
     }
     vmod_state.locks.refs++;
@@ -68,7 +68,7 @@ handle_vcl_load_event(VRT_CTX, struct vmod_priv *vcl_priv)
     static int openssl_initialized = 0;
     if (!openssl_initialized) {
         openssl_initialized = 1;
-        redisInitOpenSSL();
+        valkeyInitOpenSSL();
     }
 #endif
 #endif
@@ -132,30 +132,30 @@ handle_vcl_cold_event(VRT_CTX, vcl_state_t *config)
         Lck_Lock(&idb->db->mutex);
 
         // Release contexts in all pools.
-        for (unsigned iweight = 0; iweight < NREDIS_SERVER_WEIGHTS; iweight++) {
-            for (enum REDIS_SERVER_ROLE irole = 0; irole < NREDIS_SERVER_ROLES; irole++) {
-                redis_server_t *iserver;
+        for (unsigned iweight = 0; iweight < NVALKEY_SERVER_WEIGHTS; iweight++) {
+            for (enum VALKEY_SERVER_ROLE irole = 0; irole < NVALKEY_SERVER_ROLES; irole++) {
+                valkey_server_t *iserver;
                 VTAILQ_FOREACH(iserver, &(idb->db->servers[iweight][irole]), list) {
                     // Assertions.
-                    CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
+                    CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
 
                     // Release all contexts (both free an busy; this method is
                     // assumed to be called when threads are not using the pool).
                     iserver->pool.ncontexts = 0;
-                    redis_context_t *icontext;
+                    valkey_context_t *icontext;
                     while (!VTAILQ_EMPTY(&iserver->pool.free_contexts)) {
                         icontext = VTAILQ_FIRST(&iserver->pool.free_contexts);
-                        CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+                        CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
                         connections++;
                         VTAILQ_REMOVE(&iserver->pool.free_contexts, icontext, list);
-                        free_redis_context(icontext);
+                        free_valkey_context(icontext);
                     }
                     while (!VTAILQ_EMPTY(&iserver->pool.busy_contexts)) {
                         icontext = VTAILQ_FIRST(&iserver->pool.busy_contexts);
-                        CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+                        CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
                         connections++;
                         VTAILQ_REMOVE(&iserver->pool.busy_contexts, icontext, list);
-                        free_redis_context(icontext);
+                        free_valkey_context(icontext);
                     }
                 }
             }
@@ -165,7 +165,7 @@ handle_vcl_cold_event(VRT_CTX, vcl_state_t *config)
         Lck_Unlock(&idb->db->mutex);
     }
     Lck_Unlock(&config->mutex);
-    REDIS_LOG_INFO(ctx,
+    VALKEY_LOG_INFO(ctx,
         "Released %d pooled connections in %d database objects",
         connections, dbs);
 
@@ -201,7 +201,7 @@ event_function(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
         case VCL_EVENT_DISCARD: name = "discard"; break;
         default: name = "-";
     }
-    REDIS_LOG_INFO(ctx,
+    VALKEY_LOG_INFO(ctx,
         "VCL event triggered (event=%s)",
         name);
 
@@ -224,7 +224,7 @@ event_function(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
 }
 
 /******************************************************************************
- * redis.subnets();
+ * valkey.subnets();
  *****************************************************************************/
 
 static void
@@ -244,7 +244,7 @@ unsafe_set_subnets(VRT_CTX, vcl_state_t *config, const char *masks)
 
         // Parse weight.
         int weight = strtoul(p, (char **)&q, 10);
-        if ((p == q) || (weight < 0) || (weight >= NREDIS_SERVER_WEIGHTS)) {
+        if ((p == q) || (weight < 0) || (weight >= NVALKEY_SERVER_WEIGHTS)) {
             error = 10;
             break;
         }
@@ -302,7 +302,7 @@ unsafe_set_subnets(VRT_CTX, vcl_state_t *config, const char *masks)
         }
 
         // Log error.
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Got error while parsing subnets (error=%d, masks=%s)",
             error, masks);
     }
@@ -326,13 +326,13 @@ vmod_subnets(VRT_CTX, struct vmod_priv *vcl_priv, VCL_STRING masks)
             if ((masks != NULL) && (strlen(masks) > 0)) {
                 value = masks;
             } else {
-                value = getenv("VMOD_REDIS_SUBNETS");
+                value = getenv("VMOD_VALKEY_SUBNETS");
             }
             if ((value != NULL) && (strlen(value) > 0)) {
                 unsafe_set_subnets(ctx, config, value);
             }
         } else {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "%s already set",
                 "Subnets");
         }
@@ -343,7 +343,7 @@ vmod_subnets(VRT_CTX, struct vmod_priv *vcl_priv, VCL_STRING masks)
 }
 
 /******************************************************************************
- * redis.sentinels();
+ * valkey.sentinels();
  *****************************************************************************/
 
 VCL_VOID
@@ -360,7 +360,7 @@ vmod_sentinels(
 #ifndef RESP3_ENABLED
     // Abort if RESP3 is not available.
     if (protocol == vmod_enum_RESP3) {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "%s is not supported",
             "RESP3");
         return;
@@ -370,7 +370,7 @@ vmod_sentinels(
 #ifndef TLS_ENABLED
     // Abort if TLS is not enabled.
     if (tls) {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "%s is not supported",
             "TLS");
         return;
@@ -389,7 +389,7 @@ vmod_sentinels(
             if ((locations != NULL) && (strlen(locations) > 0)) {
                 value = locations;
             } else {
-                value = getenv("VMOD_REDIS_SENTINELS");
+                value = getenv("VMOD_VALKEY_SENTINELS");
             }
             if ((value != NULL) && (strlen(value) > 0)) {
                 config->sentinels.locations = strdup(value);
@@ -440,7 +440,7 @@ vmod_sentinels(
             // by a 'warm' event.
         }
     } else {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "%s already set",
             "Sentinels");
     }
@@ -455,7 +455,7 @@ vmod_sentinels(
 
 VCL_VOID
 vmod_db__init(
-    VRT_CTX, struct vmod_redis_db **db, const char *vcl_name, struct vmod_priv *vcl_priv,
+    VRT_CTX, struct vmod_valkey_db **db, const char *vcl_name, struct vmod_priv *vcl_priv,
     VCL_STRING location, VCL_ENUM type, VCL_INT connection_timeout,
     VCL_INT connection_ttl, VCL_INT command_timeout, VCL_INT max_command_retries,
     VCL_BOOL shared_connections, VCL_INT max_connections, VCL_ENUM protocol,
@@ -472,7 +472,7 @@ vmod_db__init(
 #ifndef RESP3_ENABLED
     // Abort if RESP3 is not available.
     if (protocol == vmod_enum_RESP3) {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "%s is not supported",
             "RESP3");
         return;
@@ -482,7 +482,7 @@ vmod_db__init(
 #ifndef TLS_ENABLED
     // Abort if TLS is not enabled.
     if (tls) {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "%s is not supported",
             "TLS");
         return;
@@ -516,15 +516,15 @@ vmod_db__init(
         command_timeout_tv.tv_usec = (command_timeout % 1000) * 1000;
 
         // Extract role & clustering flag.
-        enum REDIS_SERVER_ROLE role = type2role(type);
+        enum VALKEY_SERVER_ROLE role = type2role(type);
         unsigned clustered = type == vmod_enum_cluster;
 
 #ifdef TLS_ENABLED
-        // Create Redis SSL context.
-        redisSSLContext *tls_ssl_ctx = NULL;
+        // Create Valkey TLS context.
+        valkeyTLSContext *tls_ssl_ctx = NULL;
         if (tls) {
-            redisSSLContextError ssl_error;
-            tls_ssl_ctx = redisCreateSSLContext(
+            valkeyTLSContextError ssl_error;
+            tls_ssl_ctx = valkeyCreateTLSContext(
                 strlen(tls_cafile) > 0 ? tls_cafile : NULL,
                 strlen(tls_capath) > 0 ? tls_capath : NULL,
                 strlen(tls_certfile) > 0 ? tls_certfile : NULL,
@@ -532,16 +532,16 @@ vmod_db__init(
                 strlen(tls_sni) > 0 ? tls_sni : NULL,
                 &ssl_error);
             if (tls_ssl_ctx == NULL) {
-                REDIS_LOG_ERROR(ctx,
+                VALKEY_LOG_ERROR(ctx,
                     "Failed to create SSL context: %s",
-                    redisSSLContextGetError(ssl_error));
+                    valkeyTLSContextGetError(ssl_error));
                 return;
             }
         }
 #endif
 
         // Create new database instance.
-        struct vmod_redis_db *instance = new_vmod_redis_db(
+        struct vmod_valkey_db *instance = new_vmod_valkey_db(
             config, vcl_name, connection_timeout_tv, connection_ttl,
             command_timeout_tv, max_command_retries, shared_connections, max_connections,
             parse_protocol(protocol),
@@ -555,7 +555,7 @@ vmod_db__init(
             // Add initial server.
             Lck_Lock(&config->mutex);
             Lck_Lock(&instance->mutex);
-            redis_server_t *server = unsafe_add_redis_server(ctx, instance, config, location, role);
+            valkey_server_t *server = unsafe_add_valkey_server(ctx, instance, config, location, role);
             AN(server);
             Lck_Unlock(&instance->mutex);
             Lck_Unlock(&config->mutex);
@@ -576,25 +576,25 @@ vmod_db__init(
         *db = instance;
 
         // Log event.
-        REDIS_LOG_INFO(ctx,
+        VALKEY_LOG_INFO(ctx,
             "New database instance registered (db=%s)",
             instance->name);
     }
 
     if (*db == NULL) {
-        REDIS_FAIL_WS(ctx,);
+        VALKEY_FAIL_WS(ctx,);
     }
 }
 
 VCL_VOID
-vmod_db__fini(struct vmod_redis_db **db)
+vmod_db__fini(struct vmod_valkey_db **db)
 {
     // Assert input.
     AN(db);
     AN(*db);
 
     // Log event.
-    REDIS_LOG_INFO(NULL,
+    VALKEY_LOG_INFO(NULL,
         "Unregistering database instance (db=%s)",
         (*db)->name);
 
@@ -622,19 +622,19 @@ vmod_db__fini(struct vmod_redis_db **db)
 
 VCL_VOID
 vmod_db_add_server(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *vcl_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *vcl_priv,
     VCL_STRING location, VCL_ENUM type)
 {
     if ((location != NULL) && (strlen(location) > 0) &&
         ((!db->cluster.enabled || type == vmod_enum_cluster))) {
         // Initializations.
         vcl_state_t *config = vcl_priv->priv;
-        enum REDIS_SERVER_ROLE role = type2role(type);
+        enum VALKEY_SERVER_ROLE role = type2role(type);
 
         // Add server.
         Lck_Lock(&config->mutex);
         Lck_Lock(&db->mutex);
-        redis_server_t *server = unsafe_add_redis_server(ctx, db, config, location, role);
+        valkey_server_t *server = unsafe_add_valkey_server(ctx, db, config, location, role);
         AN(server);
         unsigned discovery =
             (server != NULL) &&
@@ -658,7 +658,7 @@ vmod_db_add_server(
 
 VCL_VOID
 vmod_db_command(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv,
     VCL_STRING name)
 {
     if ((name != NULL) && (strlen(name) > 0)) {
@@ -680,7 +680,7 @@ vmod_db_command(
 
 VCL_VOID
 vmod_db_timeout(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv,
     VCL_INT command_timeout)
 {
     // Fetch thread state.
@@ -700,7 +700,7 @@ vmod_db_timeout(
 
 VCL_VOID
 vmod_db_retries(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv,
     VCL_INT max_command_retries)
 {
     // Fetch thread state.
@@ -719,7 +719,7 @@ vmod_db_retries(
 
 VCL_VOID
 vmod_db_push(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv,
     VCL_STRING arg)
 {
     // Fetch thread state.
@@ -729,20 +729,20 @@ vmod_db_push(
     // reached or if the initial call to .command() was not executed or
     // if running this in a different database.
     if ((state->command.argc >= 1) &&
-        (state->command.argc < MAX_REDIS_COMMAND_ARGS) &&
+        (state->command.argc < MAX_VALKEY_COMMAND_ARGS) &&
         (state->command.db == db)) {
         // Handle NULL arguments as empty strings.
         if (arg == NULL) {
             arg = WS_Copy(ctx->ws, "", -1);
             if (arg == NULL) {
-                REDIS_FAIL_WS(ctx, );
+                VALKEY_FAIL_WS(ctx, );
             }
         }
         state->command.argv[state->command.argc++] = arg;
     } else {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Failed to push argument (db=%s, limit=%d)",
-            db->name, MAX_REDIS_COMMAND_ARGS);
+            db->name, MAX_VALKEY_COMMAND_ARGS);
     }
 }
 
@@ -752,13 +752,13 @@ vmod_db_push(
 
 VCL_VOID
 vmod_db_execute(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *vcl_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *vcl_priv,
     struct vmod_priv *task_priv, VCL_BOOL master)
 {
     // Fetch thread state.
     task_state_t *state = get_task_state(ctx, task_priv, 0);
 
-    // Do not continue if the initial call to redis.command() was not executed
+    // Do not continue if the initial call to valkey.command() was not executed
     // or if running this in a different database or if the workspace is
     // already overflowed.
     if ((state->command.argc >= 1) &&
@@ -772,7 +772,7 @@ vmod_db_execute(
             master = 1;
         }
 
-        // Force execution of LUA scripts in a master server when Redis Cluster
+        // Force execution of LUA scripts in a master server when Valkey Cluster
         // support is enabled. It's responsibility of the caller to avoid
         // execution of LUA scripts in slaves servers when clustering is
         // enabled. However, due it's counter-intuitiveness and the hidden and
@@ -793,7 +793,7 @@ vmod_db_execute(
                 state->command.argc, state->command.argv,
                 &retries, master);
         } else {
-            state->command.reply = redis_execute(
+            state->command.reply = valkey_execute(
                 ctx, db, state,
                 state->command.timeout, state->command.max_retries,
                 state->command.argc, state->command.argv,
@@ -803,8 +803,8 @@ vmod_db_execute(
         // Log error replies (other errors have already logged while executing
         // commands, retries, redirections, etc.).
         if ((state->command.reply != NULL) &&
-            (state->command.reply->type == REDIS_REPLY_ERROR)) {
-            REDIS_LOG_ERROR(ctx,
+            (state->command.reply->type == VALKEY_REPLY_ERROR)) {
+            VALKEY_LOG_ERROR(ctx,
                 "Got error reply while executing command (command=%s, db=%s): %s",
                 state->command.argv[0], db->name, state->command.reply->str);
 
@@ -833,7 +833,7 @@ vmod_db_execute(
 #define EASY_EXEC(name, arg_type)						\
 VCL_VOID									\
 name(										\
-    VRT_CTX, struct vmod_redis_db *db,						\
+    VRT_CTX, struct vmod_valkey_db *db,						\
     struct arg_type *args)							\
 {										\
     AN(ctx);									\
@@ -868,7 +868,7 @@ EASY_EXEC(vmod_db_easy_execute_proxy, vmod_easy_execute_arg);
  *****************************************************************************/
 
 VCL_BOOL
-vmod_db_replied(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv)
+vmod_db_replied(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv)
 {
     task_state_t *state = get_task_state(ctx, task_priv, 0);
     return (state->command.db == db) && (state->command.reply != NULL);
@@ -887,7 +887,7 @@ vmod_db_replied(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv)
 
 #define VMOD_DB_REPLY_IS_FOO(foo, condition) \
 VCL_BOOL \
-vmod_db_reply_is_ ## foo(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv) \
+vmod_db_reply_is_ ## foo(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv) \
 { \
     task_state_t *state = get_task_state(ctx, task_priv, 0); \
     return \
@@ -898,38 +898,38 @@ vmod_db_reply_is_ ## foo(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *ta
 
 VMOD_DB_REPLY_IS_FOO(
     error,
-    state->command.reply->type == REDIS_REPLY_ERROR)
+    state->command.reply->type == VALKEY_REPLY_ERROR)
 VMOD_DB_REPLY_IS_FOO(
     nil,
-    state->command.reply->type == REDIS_REPLY_NIL)
+    state->command.reply->type == VALKEY_REPLY_NIL)
 VMOD_DB_REPLY_IS_FOO(
     status,
-    state->command.reply->type == REDIS_REPLY_STATUS)
+    state->command.reply->type == VALKEY_REPLY_STATUS)
 VMOD_DB_REPLY_IS_FOO(
     integer,
-    state->command.reply->type == REDIS_REPLY_INTEGER)
+    state->command.reply->type == VALKEY_REPLY_INTEGER)
 VMOD_DB_REPLY_IS_FOO(
     boolean,
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_BOOL, 0))
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_BOOL, 0))
 VMOD_DB_REPLY_IS_FOO(
     double,
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_DOUBLE, 0))
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_DOUBLE, 0))
 VMOD_DB_REPLY_IS_FOO(
     string,
-    state->command.reply->type == REDIS_REPLY_STRING ||
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_VERB, 0))
+    state->command.reply->type == VALKEY_REPLY_STRING ||
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_VERB, 0))
 VMOD_DB_REPLY_IS_FOO(
     array,
-    state->command.reply->type == REDIS_REPLY_ARRAY ||
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_MAP, 0) ||
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_SET, 0))
+    state->command.reply->type == VALKEY_REPLY_ARRAY ||
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_MAP, 0) ||
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_SET, 0))
 
 /******************************************************************************
  * .get_reply();
  *****************************************************************************/
 
 VCL_STRING
-vmod_db_get_reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv)
+vmod_db_get_reply(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv)
 {
     task_state_t *state = get_task_state(ctx, task_priv, 0);
     if ((state->command.db == db) &&
@@ -951,7 +951,7 @@ vmod_db_get_reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv
 
 #define VMOD_DB_GET_FOO_REPLY(type, foo, condition, field, fallback) \
 VCL_ ## type \
-vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv) \
+vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv) \
 { \
     task_state_t *state = get_task_state(ctx, task_priv, 0); \
     if ((state->command.db == db) && \
@@ -966,25 +966,25 @@ vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_pri
 VMOD_DB_GET_FOO_REPLY(
     INT,
     integer,
-    state->command.reply->type == REDIS_REPLY_INTEGER,
+    state->command.reply->type == VALKEY_REPLY_INTEGER,
     integer,
     0)
 VMOD_DB_GET_FOO_REPLY(
     BOOL,
     boolean,
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_BOOL, 0),
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_BOOL, 0),
     integer,
     0)
 VMOD_DB_GET_FOO_REPLY(
     REAL,
     double,
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_DOUBLE, 0),
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_DOUBLE, 0),
     RESP3_SWITCH(dval, integer),
     0.0)
 
 #define VMOD_DB_GET_FOO_STRING_REPLY(foo, condition) \
 VCL_STRING \
-vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv) \
+vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv) \
 { \
     task_state_t *state = get_task_state(ctx, task_priv, 0); \
     if ((state->command.db == db) && \
@@ -992,7 +992,7 @@ vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_pri
         (condition)) { \
         char *result = WS_Copy(ctx->ws, state->command.reply->str, state->command.reply->len + 1); \
         if (result == NULL) { \
-            REDIS_FAIL_WS(ctx, NULL); \
+            VALKEY_FAIL_WS(ctx, NULL); \
         } \
         return result; \
     } else { \
@@ -1002,14 +1002,14 @@ vmod_db_get_ ## foo ## _reply(VRT_CTX, struct vmod_redis_db *db, struct vmod_pri
 
 VMOD_DB_GET_FOO_STRING_REPLY(
     error,
-    state->command.reply->type == REDIS_REPLY_ERROR)
+    state->command.reply->type == VALKEY_REPLY_ERROR)
 VMOD_DB_GET_FOO_STRING_REPLY(
     status,
-    state->command.reply->type == REDIS_REPLY_STATUS)
+    state->command.reply->type == VALKEY_REPLY_STATUS)
 VMOD_DB_GET_FOO_STRING_REPLY(
     string,
-    state->command.reply->type == REDIS_REPLY_STRING ||
-    RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_VERB, 0))
+    state->command.reply->type == VALKEY_REPLY_STRING ||
+    RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_VERB, 0))
 
 /******************************************************************************
  * .get_array_reply_length();
@@ -1017,14 +1017,14 @@ VMOD_DB_GET_FOO_STRING_REPLY(
 
 VCL_INT
 vmod_db_get_array_reply_length(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv)
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv)
 {
     task_state_t *state = get_task_state(ctx, task_priv, 0);
     if ((state->command.db == db) &&
         (state->command.reply != NULL) &&
-        (state->command.reply->type == REDIS_REPLY_ARRAY ||
-         RESP3_SWITCH(state->command.reply->type != REDIS_REPLY_MAP, 0) ||
-         RESP3_SWITCH(state->command.reply->type != REDIS_REPLY_SET, 0))) {
+        (state->command.reply->type == VALKEY_REPLY_ARRAY ||
+         RESP3_SWITCH(state->command.reply->type != VALKEY_REPLY_MAP, 0) ||
+         RESP3_SWITCH(state->command.reply->type != VALKEY_REPLY_SET, 0))) {
         return state->command.reply->elements;
     } else {
         return 0;
@@ -1044,44 +1044,44 @@ vmod_db_get_array_reply_length(
 
 #define VMOD_DB_ARRAY_REPLY_IS_FOO(foo, condition) \
 VCL_BOOL \
-vmod_db_array_reply_is_ ## foo(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv, VCL_INT index) \
+vmod_db_array_reply_is_ ## foo(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv, VCL_INT index) \
 { \
     task_state_t *state = get_task_state(ctx, task_priv, 0); \
     return \
         (state->command.db == db) && \
         (state->command.reply != NULL) && \
-        (state->command.reply->type == REDIS_REPLY_ARRAY) && \
+        (state->command.reply->type == VALKEY_REPLY_ARRAY) && \
         (index < state->command.reply->elements) && \
         (condition); \
 }
 
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     error,
-    state->command.reply->element[index]->type == REDIS_REPLY_ERROR)
+    state->command.reply->element[index]->type == VALKEY_REPLY_ERROR)
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     nil,
-    state->command.reply->element[index]->type == REDIS_REPLY_NIL)
+    state->command.reply->element[index]->type == VALKEY_REPLY_NIL)
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     status,
-    state->command.reply->element[index]->type == REDIS_REPLY_STATUS)
+    state->command.reply->element[index]->type == VALKEY_REPLY_STATUS)
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     integer,
-    state->command.reply->element[index]->type == REDIS_REPLY_INTEGER)
+    state->command.reply->element[index]->type == VALKEY_REPLY_INTEGER)
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     boolean,
-    RESP3_SWITCH(state->command.reply->element[index]->type == REDIS_REPLY_BOOL, 0))
+    RESP3_SWITCH(state->command.reply->element[index]->type == VALKEY_REPLY_BOOL, 0))
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     double,
-    RESP3_SWITCH(state->command.reply->element[index]->type == REDIS_REPLY_DOUBLE, 0))
+    RESP3_SWITCH(state->command.reply->element[index]->type == VALKEY_REPLY_DOUBLE, 0))
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     string,
-    state->command.reply->element[index]->type == REDIS_REPLY_STRING ||
-    RESP3_SWITCH(state->command.reply->element[index]->type == REDIS_REPLY_VERB, 0))
+    state->command.reply->element[index]->type == VALKEY_REPLY_STRING ||
+    RESP3_SWITCH(state->command.reply->element[index]->type == VALKEY_REPLY_VERB, 0))
 VMOD_DB_ARRAY_REPLY_IS_FOO(
     array,
-    state->command.reply->element[index]->type == REDIS_REPLY_ARRAY ||
-    RESP3_SWITCH(state->command.reply->element[index]->type == REDIS_REPLY_MAP, 0) ||
-    RESP3_SWITCH(state->command.reply->element[index]->type == REDIS_REPLY_SET, 0))
+    state->command.reply->element[index]->type == VALKEY_REPLY_ARRAY ||
+    RESP3_SWITCH(state->command.reply->element[index]->type == VALKEY_REPLY_MAP, 0) ||
+    RESP3_SWITCH(state->command.reply->element[index]->type == VALKEY_REPLY_SET, 0))
 
 /******************************************************************************
  * .get_array_reply_value();
@@ -1089,15 +1089,15 @@ VMOD_DB_ARRAY_REPLY_IS_FOO(
 
 VCL_STRING
 vmod_db_get_array_reply_value(
-    VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv,
+    VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv,
     VCL_INT index)
 {
     task_state_t *state = get_task_state(ctx, task_priv, 0);
     if ((state->command.db == db) &&
         (state->command.reply != NULL) &&
-        (state->command.reply->type == REDIS_REPLY_ARRAY ||
-         RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_MAP, 0) ||
-         RESP3_SWITCH(state->command.reply->type == REDIS_REPLY_SET, 0)) &&
+        (state->command.reply->type == VALKEY_REPLY_ARRAY ||
+         RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_MAP, 0) ||
+         RESP3_SWITCH(state->command.reply->type == VALKEY_REPLY_SET, 0)) &&
         (index < state->command.reply->elements)) {
         return get_reply(ctx, state->command.reply->element[index]);
     } else {
@@ -1110,7 +1110,7 @@ vmod_db_get_array_reply_value(
  *****************************************************************************/
 
 VCL_VOID
-vmod_db_free(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv)
+vmod_db_free(VRT_CTX, struct vmod_valkey_db *db, struct vmod_priv *task_priv)
 {
     get_task_state(ctx, task_priv, 1);
 }
@@ -1121,7 +1121,7 @@ vmod_db_free(VRT_CTX, struct vmod_redis_db *db, struct vmod_priv *task_priv)
 
 VCL_STRING
 vmod_db_stats(
-    VRT_CTX, struct vmod_redis_db *db, VCL_ENUM format, VCL_BOOL stream,
+    VRT_CTX, struct vmod_valkey_db *db, VCL_ENUM format, VCL_BOOL stream,
     VCL_STRING prometheus_name_prefix, VCL_BOOL prometheus_default_labels,
     VCL_STRING prometheus_extra_labels)
 {
@@ -1206,7 +1206,7 @@ vmod_db_stats(
         //   - No validations or transformations are applied to metric names,
         //     label names and label values in order to obey the data model
         //     described in https://prometheus.io/docs/concepts/data_model/.
-        const char *prefix = "vmod_redis_";
+        const char *prefix = "vmod_valkey_";
         if ((prometheus_name_prefix != NULL) && (strlen(prometheus_name_prefix) > 0)) {
             prefix = prometheus_name_prefix;
         }
@@ -1221,7 +1221,7 @@ vmod_db_stats(
             if (!stream) {
                 VSB_destroy(&vsb);
             }
-            REDIS_FAIL_WS(ctx, NULL);
+            VALKEY_FAIL_WS(ctx, NULL);
         }
         const char *separator = (strlen(labels) > 0) ? "," : "";
         AZ(VSB_printf(vsb,
@@ -1308,7 +1308,7 @@ vmod_db_stats(
         VSB_destroy(&vsb);
     }
     if (result == NULL) {
-        REDIS_FAIL_WS(ctx, NULL);
+        VALKEY_FAIL_WS(ctx, NULL);
     }
     return result;
 }
@@ -1318,7 +1318,7 @@ vmod_db_stats(
  *****************************************************************************/
 
 VCL_INT
-vmod_db_counter(VRT_CTX, struct vmod_redis_db *db, VCL_STRING name)
+vmod_db_counter(VRT_CTX, struct vmod_valkey_db *db, VCL_STRING name)
 {
     if (strcmp(name, "servers.total") == 0) {
         return db->stats.servers.total;
@@ -1361,7 +1361,7 @@ vmod_db_counter(VRT_CTX, struct vmod_redis_db *db, VCL_STRING name)
     } else if (strcmp(name, "cluster.replies.ask") == 0) {
         return db->stats.cluster.replies.ask;
     } else {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Failed to fetch counter (name=%s)",
             name);
         return 0;
@@ -1372,11 +1372,11 @@ vmod_db_counter(VRT_CTX, struct vmod_redis_db *db, VCL_STRING name)
  * PROXY.
  *****************************************************************************/
 
-static struct vmod_redis_db *
+static struct vmod_valkey_db *
 get_db_instance(VRT_CTX, vcl_state_t *config, const char *db)
 {
     // Initializations.
-    struct vmod_redis_db *result = NULL;
+    struct vmod_valkey_db *result = NULL;
 
     // Search database instance.
     Lck_Lock(&config->mutex);
@@ -1413,7 +1413,7 @@ vmod_use(
 
     // Log error?
     if (state->db == NULL) {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Failed to use database (db=%s)",
             db);
     }
@@ -1422,7 +1422,7 @@ vmod_use(
 VCL_VOID
 vmod_easy_execute(VRT_CTX, struct vmod_easy_execute_arg *args)
 {
-    struct vmod_redis_db *instance;
+    struct vmod_valkey_db *instance;
 
     AN(ctx);
     AN(args);
@@ -1440,7 +1440,7 @@ vmod_easy_execute(VRT_CTX, struct vmod_easy_execute_arg *args)
     if (instance != NULL) {
         return vmod_db_easy_execute_proxy(ctx, instance, args);
     } else {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Database instance not available%s",
             "");
         return;
@@ -1453,7 +1453,7 @@ vmod_easy_execute(VRT_CTX, struct vmod_easy_execute_arg *args)
 VCL_ ## type \
 vmod_ ## method(VRT_CTX, struct vmod_priv *vcl_priv, struct vmod_priv *task_priv, ##fargs, VCL_STRING db) \
 { \
-    struct vmod_redis_db *instance; \
+    struct vmod_valkey_db *instance; \
     if ((db != NULL) && (strlen(db) > 0)) { \
         vcl_state_t *config = vcl_priv->priv; \
         instance = get_db_instance(ctx, config, db); \
@@ -1465,7 +1465,7 @@ vmod_ ## method(VRT_CTX, struct vmod_priv *vcl_priv, struct vmod_priv *task_priv
     if (instance != NULL) { \
         return vmod_db_ ## method(ctx, instance margs); \
     } else { \
-        REDIS_LOG_ERROR(ctx, \
+        VALKEY_LOG_ERROR(ctx, \
             "Database instance not available%s", \
             ""); \
         return fallback; \
@@ -1639,34 +1639,34 @@ flush_task_state(task_state_t *state)
     }
 }
 
-static enum REDIS_SERVER_ROLE
+static enum VALKEY_SERVER_ROLE
 type2role(VCL_ENUM type)
 {
-    enum REDIS_SERVER_ROLE result;
+    enum VALKEY_SERVER_ROLE result;
     if (type == vmod_enum_master) {
-        result = REDIS_SERVER_MASTER_ROLE;
+        result = VALKEY_SERVER_MASTER_ROLE;
     } else if (type == vmod_enum_slave) {
-        result = REDIS_SERVER_SLAVE_ROLE;
+        result = VALKEY_SERVER_SLAVE_ROLE;
     } else if (type == vmod_enum_auto) {
-        result = REDIS_SERVER_TBD_ROLE;
+        result = VALKEY_SERVER_TBD_ROLE;
     } else if (type == vmod_enum_cluster) {
-        result = REDIS_SERVER_TBD_ROLE;
+        result = VALKEY_SERVER_TBD_ROLE;
     } else {
         WRONG("Invalid server type value.");
     }
     return result;
 }
 
-static enum REDIS_PROTOCOL
+static enum VALKEY_PROTOCOL
 parse_protocol(VCL_ENUM protocol)
 {
-    enum REDIS_PROTOCOL result;
+    enum VALKEY_PROTOCOL result;
     if (protocol == vmod_enum_default) {
-        result = REDIS_PROTOCOL_DEFAULT;
+        result = VALKEY_PROTOCOL_DEFAULT;
     } else if (protocol == vmod_enum_RESP2) {
-        result = REDIS_PROTOCOL_RESP2;
+        result = VALKEY_PROTOCOL_RESP2;
     } else if (protocol == vmod_enum_RESP3) {
-        result = REDIS_PROTOCOL_RESP3;
+        result = VALKEY_PROTOCOL_RESP3;
     } else {
         WRONG("Invalid protocol value.");
     }
@@ -1674,40 +1674,40 @@ parse_protocol(VCL_ENUM protocol)
 }
 
 static const char *
-get_reply(VRT_CTX, redisReply *reply)
+get_reply(VRT_CTX, valkeyReply *reply)
 {
     // Default result.
     const char *result = NULL;
 
     // Check type of reply.
     switch (reply->type) {
-        case REDIS_REPLY_ERROR:
-        case REDIS_REPLY_STATUS:
-        case REDIS_REPLY_STRING:
+        case VALKEY_REPLY_ERROR:
+        case VALKEY_REPLY_STATUS:
+        case VALKEY_REPLY_STRING:
 #ifdef RESP3_ENABLED
-        case REDIS_REPLY_VERB:
-        case REDIS_REPLY_DOUBLE:
+        case VALKEY_REPLY_VERB:
+        case VALKEY_REPLY_DOUBLE:
 #endif
             result = WS_Copy(ctx->ws, reply->str, reply->len + 1);
             if (result == NULL) {
-                REDIS_FAIL_WS(ctx, NULL);
+                VALKEY_FAIL_WS(ctx, NULL);
             }
             break;
 
-        case REDIS_REPLY_INTEGER:
+        case VALKEY_REPLY_INTEGER:
 #ifdef RESP3_ENABLED
-        case REDIS_REPLY_BOOL:
+        case VALKEY_REPLY_BOOL:
 #endif
             result = WS_Printf(ctx->ws, "%lld", reply->integer);
             if (result == NULL) {
-                REDIS_FAIL_WS(ctx, NULL);
+                VALKEY_FAIL_WS(ctx, NULL);
             }
             break;
 
-        case REDIS_REPLY_ARRAY:
+        case VALKEY_REPLY_ARRAY:
 #ifdef RESP3_ENABLED
-        case REDIS_REPLY_MAP:
-        case REDIS_REPLY_SET:
+        case VALKEY_REPLY_MAP:
+        case VALKEY_REPLY_SET:
 #endif
             // XXX: array, map & set replies are *not* supported.
             result = NULL;

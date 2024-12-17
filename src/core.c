@@ -6,9 +6,9 @@
 #include <string.h>
 #include <pthread.h>
 #include <poll.h>
-#include <hiredis/hiredis.h>
+#include <valkey/valkey.h>
 #ifdef TLS_ENABLED
-#include <hiredis/hiredis_ssl.h>
+#include <valkey/tls.h>
 #endif
 #include <arpa/inet.h>
 #ifdef __FreeBSD__
@@ -38,7 +38,7 @@ struct plan {
     // database is configured to use private contexts.
     struct {
         unsigned n;
-        redis_context_t **list;
+        valkey_context_t **list;
         unsigned next;
     } contexts;
 
@@ -46,46 +46,46 @@ struct plan {
     // to be considered during the execution.
     struct {
         unsigned n;
-        redis_server_t **list;
+        valkey_server_t **list;
         unsigned next;
     } servers;
 };
 
-static enum REDIS_SERVER_ROLE unsafe_discover_redis_server_role(
-    VRT_CTX, redis_server_t *server);
+static enum VALKEY_SERVER_ROLE unsafe_discover_valkey_server_role(
+    VRT_CTX, valkey_server_t *server);
 
 static struct plan *plan_execution(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state,
-    unsigned size, redis_server_t *server, unsigned master, unsigned slot);
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state,
+    unsigned size, valkey_server_t *server, unsigned master, unsigned slot);
 
-static redis_context_t *lock_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state, struct plan *plan);
+static valkey_context_t *lock_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state, struct plan *plan);
 
-static void unlock_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state, redis_context_t *context);
+static void unlock_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state, valkey_context_t *context);
 
-static redisReply *get_redis_repy(
-    VRT_CTX, redis_context_t *context, struct timeval timeout, unsigned argc,
+static valkeyReply *get_valkey_repy(
+    VRT_CTX, valkey_context_t *context, struct timeval timeout, unsigned argc,
     const char *argv[], unsigned asking);
 
 static const char *sha1(VRT_CTX, const char *script);
 
-redis_server_t *
-new_redis_server(
-    struct vmod_redis_db *db, const char *location, enum REDIS_SERVER_ROLE role)
+valkey_server_t *
+new_valkey_server(
+    struct vmod_valkey_db *db, const char *location, enum VALKEY_SERVER_ROLE role)
 {
-    redis_server_t *result;
-    ALLOC_OBJ(result, REDIS_SERVER_MAGIC);
+    valkey_server_t *result;
+    ALLOC_OBJ(result, VALKEY_SERVER_MAGIC);
     AN(result);
 
     char *ptr = strrchr(location, ':');
     if (ptr != NULL) {
-        result->location.type = REDIS_SERVER_LOCATION_HOST_TYPE;
+        result->location.type = VALKEY_SERVER_LOCATION_HOST_TYPE;
         result->location.parsed.address.host = strndup(location, ptr - location);
         AN(result->location.parsed.address.host);
         result->location.parsed.address.port = atoi(ptr + 1);
     } else {
-        result->location.type = REDIS_SERVER_LOCATION_SOCKET_TYPE;
+        result->location.type = VALKEY_SERVER_LOCATION_SOCKET_TYPE;
         result->location.parsed.path = strdup(location);
         AN(result->location.parsed.path);
     }
@@ -95,7 +95,7 @@ new_redis_server(
     struct in_addr ia4;
     struct in6_addr ia6;
     if ((db->cluster.enabled) &&
-        ((result->location.type != REDIS_SERVER_LOCATION_HOST_TYPE) ||
+        ((result->location.type != VALKEY_SERVER_LOCATION_HOST_TYPE) ||
          ((inet_pton(AF_INET, result->location.parsed.address.host, &ia4) == 0) &&
           (inet_pton(AF_INET6, result->location.parsed.address.host, &ia6) == 0)))) {
         free((void *) result->location.parsed.address.host);
@@ -118,7 +118,7 @@ new_redis_server(
     VTAILQ_INIT(&result->pool.free_contexts);
     VTAILQ_INIT(&result->pool.busy_contexts);
 
-    for (int i = 0; i < NREDIS_CLUSTER_SLOTS; i++) {
+    for (int i = 0; i < NVALKEY_CLUSTER_SLOTS; i++) {
         result->cluster.slots[i] = 0;
     }
 
@@ -130,49 +130,49 @@ new_redis_server(
 }
 
 void
-free_redis_server(redis_server_t *server)
+free_valkey_server(valkey_server_t *server)
 {
-    CHECK_OBJ_NOTNULL(server, REDIS_SERVER_MAGIC);
+    CHECK_OBJ_NOTNULL(server, VALKEY_SERVER_MAGIC);
 
     server->db = NULL;
 
     free((void *) server->location.raw);
     server->location.raw = NULL;
     switch (server->location.type) {
-        case REDIS_SERVER_LOCATION_HOST_TYPE:
+        case VALKEY_SERVER_LOCATION_HOST_TYPE:
             free((void *) server->location.parsed.address.host);
             server->location.parsed.address.host = NULL;
             server->location.parsed.address.port = 0;
             break;
 
-        case REDIS_SERVER_LOCATION_SOCKET_TYPE:
+        case VALKEY_SERVER_LOCATION_SOCKET_TYPE:
             free((void *) server->location.parsed.path);
             server->location.parsed.path = NULL;
             break;
     }
 
-    server->role = REDIS_SERVER_TBD_ROLE;
+    server->role = VALKEY_SERVER_TBD_ROLE;
 
     server->weight = 0;
 
     AZ(pthread_cond_destroy(&server->pool.cond));
 
     server->pool.ncontexts = 0;
-    redis_context_t *icontext;
+    valkey_context_t *icontext;
     while (!VTAILQ_EMPTY(&server->pool.free_contexts)) {
         icontext = VTAILQ_FIRST(&server->pool.free_contexts);
-        CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+        CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
         VTAILQ_REMOVE(&server->pool.free_contexts, icontext, list);
-        free_redis_context(icontext);
+        free_valkey_context(icontext);
     }
     while (!VTAILQ_EMPTY(&server->pool.busy_contexts)) {
         icontext = VTAILQ_FIRST(&server->pool.busy_contexts);
-        CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+        CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
         VTAILQ_REMOVE(&server->pool.busy_contexts, icontext, list);
-        free_redis_context(icontext);
+        free_valkey_context(icontext);
     }
 
-    for (int i = 0; i < NREDIS_CLUSTER_SLOTS; i++) {
+    for (int i = 0; i < NVALKEY_CLUSTER_SLOTS; i++) {
         server->cluster.slots[i] = 0;
     }
 
@@ -182,12 +182,12 @@ free_redis_server(redis_server_t *server)
     FREE_OBJ(server);
 }
 
-redis_context_t *
-new_redis_context(
-    redis_server_t *server, redisContext *rcontext, time_t tst)
+valkey_context_t *
+new_valkey_context(
+    valkey_server_t *server, valkeyContext *rcontext, time_t tst)
 {
-    redis_context_t *result;
-    ALLOC_OBJ(result, REDIS_CONTEXT_MAGIC);
+    valkey_context_t *result;
+    ALLOC_OBJ(result, VALKEY_CONTEXT_MAGIC);
     AN(result);
 
     result->server = server;
@@ -199,13 +199,13 @@ new_redis_context(
 }
 
 void
-free_redis_context(redis_context_t *context)
+free_valkey_context(valkey_context_t *context)
 {
-    CHECK_OBJ_NOTNULL(context, REDIS_CONTEXT_MAGIC);
+    CHECK_OBJ_NOTNULL(context, VALKEY_CONTEXT_MAGIC);
 
     context->server = NULL;
     if (context->rcontext != NULL) {
-        redisFree(context->rcontext);
+        valkeyFree(context->rcontext);
         context->rcontext = NULL;
     }
     context->version = 0;
@@ -214,27 +214,27 @@ free_redis_context(redis_context_t *context)
     FREE_OBJ(context);
 }
 
-struct vmod_redis_db *
-new_vmod_redis_db(
+struct vmod_valkey_db *
+new_vmod_valkey_db(
     vcl_state_t *config, const char *name, struct timeval connection_timeout,
     unsigned connection_ttl, struct timeval command_timeout, unsigned max_command_retries,
-    unsigned shared_connections, unsigned max_connections, enum REDIS_PROTOCOL protocol,
+    unsigned shared_connections, unsigned max_connections, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    redisSSLContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ssl_ctx,
 #endif
     const char *user, const char *password, unsigned sickness_ttl,
     unsigned ignore_slaves, unsigned clustered, unsigned max_cluster_hops)
 {
-    struct vmod_redis_db *result;
-    ALLOC_OBJ(result, VMOD_REDIS_DATABASE_MAGIC);
+    struct vmod_valkey_db *result;
+    ALLOC_OBJ(result, VMOD_VALKEY_DATABASE_MAGIC);
     AN(result);
 
     Lck_New(&result->mutex, vmod_state.locks.db);
 
     result->config = config;
 
-    for (unsigned weight = 0; weight < NREDIS_SERVER_WEIGHTS; weight++) {
-        for (enum REDIS_SERVER_ROLE role = 0; role < NREDIS_SERVER_ROLES; role++) {
+    for (unsigned weight = 0; weight < NVALKEY_SERVER_WEIGHTS; weight++) {
+        for (enum VALKEY_SERVER_ROLE role = 0; role < NVALKEY_SERVER_ROLES; role++) {
             VTAILQ_INIT(&result->servers[weight][role]);
         }
     }
@@ -294,22 +294,22 @@ new_vmod_redis_db(
 }
 
 void
-free_vmod_redis_db(struct vmod_redis_db *db)
+free_vmod_valkey_db(struct vmod_valkey_db *db)
 {
-    CHECK_OBJ_NOTNULL(db, VMOD_REDIS_DATABASE_MAGIC);
+    CHECK_OBJ_NOTNULL(db, VMOD_VALKEY_DATABASE_MAGIC);
 
     Lck_Delete(&db->mutex);
 
     db->config = NULL;
 
-    for (unsigned weight = 0; weight < NREDIS_SERVER_WEIGHTS; weight++) {
-        for (enum REDIS_SERVER_ROLE role = 0; role < NREDIS_SERVER_ROLES; role++) {
-            redis_server_t *iserver;
+    for (unsigned weight = 0; weight < NVALKEY_SERVER_WEIGHTS; weight++) {
+        for (enum VALKEY_SERVER_ROLE role = 0; role < NVALKEY_SERVER_ROLES; role++) {
+            valkey_server_t *iserver;
             while (!VTAILQ_EMPTY(&db->servers[weight][role])) {
                 iserver = VTAILQ_FIRST(&db->servers[weight][role]);
-                CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
+                CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
                 VTAILQ_REMOVE(&db->servers[weight][role], iserver, list);
-                free_redis_server(iserver);
+                free_valkey_server(iserver);
             }
         }
     }
@@ -322,10 +322,10 @@ free_vmod_redis_db(struct vmod_redis_db *db)
     db->max_command_retries = 0;
     db->shared_connections = 0;
     db->max_connections = 0;
-    db->protocol = REDIS_PROTOCOL_DEFAULT;
+    db->protocol = VALKEY_PROTOCOL_DEFAULT;
 #ifdef TLS_ENABLED
     if (db->tls_ssl_ctx != NULL) {
-        redisFreeSSLContext(db->tls_ssl_ctx);
+        valkeyFreeTLSContext(db->tls_ssl_ctx);
         db->tls_ssl_ctx = NULL;
     }
 #endif
@@ -394,12 +394,12 @@ free_task_state(task_state_t *state)
     CHECK_OBJ_NOTNULL(state, TASK_STATE_MAGIC);
 
     state->ncontexts = 0;
-    redis_context_t *icontext;
+    valkey_context_t *icontext;
     while (!VTAILQ_EMPTY(&state->contexts)) {
         icontext = VTAILQ_FIRST(&state->contexts);
-        CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+        CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
         VTAILQ_REMOVE(&state->contexts, icontext, list);
-        free_redis_context(icontext);
+        free_valkey_context(icontext);
     }
 
     state->db = NULL;
@@ -432,7 +432,7 @@ new_vcl_state()
     result->sentinels.period = 0;
     result->sentinels.connection_timeout = (struct timeval){ 0 };
     result->sentinels.command_timeout = (struct timeval){ 0 };
-    result->sentinels.protocol = REDIS_PROTOCOL_DEFAULT;
+    result->sentinels.protocol = VALKEY_PROTOCOL_DEFAULT;
 #ifdef TLS_ENABLED
     result->sentinels.tls = 0;
     result->sentinels.tls_cafile = NULL;
@@ -482,7 +482,7 @@ free_vcl_state(vcl_state_t *priv)
     priv->sentinels.period = 0;
     priv->sentinels.connection_timeout = (struct timeval){ 0 };
     priv->sentinels.command_timeout = (struct timeval){ 0 };
-    priv->sentinels.protocol = REDIS_PROTOCOL_DEFAULT;
+    priv->sentinels.protocol = VALKEY_PROTOCOL_DEFAULT;
 #ifdef TLS_ENABLED
     priv->sentinels.tls = 0;
     if (priv->sentinels.tls_cafile != NULL) {
@@ -544,7 +544,7 @@ free_subnet(subnet_t *subnet)
 }
 
 database_t *
-new_database(struct vmod_redis_db *db)
+new_database(struct vmod_valkey_db *db)
 {
     database_t *result;
     ALLOC_OBJ(result, DATABASE_MAGIC);
@@ -560,23 +560,23 @@ free_database(database_t *db)
 {
     CHECK_OBJ_NOTNULL(db, DATABASE_MAGIC);
 
-    free_vmod_redis_db(db->db);
+    free_vmod_valkey_db(db->db);
     db->db = NULL;
 
     FREE_OBJ(db);
 }
 
-redisReply *
-redis_execute(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state, struct timeval timeout,
+valkeyReply *
+valkey_execute(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state, struct timeval timeout,
     unsigned max_retries, unsigned argc, const char *argv[], unsigned *retries,
-    redis_server_t *server, unsigned asking, unsigned master, unsigned slot)
+    valkey_server_t *server, unsigned asking, unsigned master, unsigned slot)
 {
     // Assertions.
     assert(*retries <= max_retries);
 
     // Initializations.
-    redisReply *result = NULL;
+    valkeyReply *result = NULL;
 
     // Build the execution plan.
     struct plan *plan = plan_execution(
@@ -590,7 +590,7 @@ redis_execute(
         // Execute command, retrying up to some limit.
         while (result == NULL) {
             // Initializations.
-            redis_context_t *context = lock_redis_context(ctx, db, state, plan);
+            valkey_context_t *context = lock_valkey_context(ctx, db, state, plan);
 
             // Do not continue if a context is not available.
             if (context != NULL) {
@@ -614,14 +614,14 @@ redis_execute(
                     }
 
                     // Execute the EVALSHA command.
-                    result = get_redis_repy(ctx, context, timeout, argc, argv, asking);
+                    result = get_valkey_repy(ctx, context, timeout, argc, argv, asking);
 
                     // Check reply. If replied with a NOSCRIPT, the original
                     // EVAL command should be executed to register the script
-                    // for the first time in the Redis server.
+                    // for the first time in the Valkey server.
                     if (!context->rcontext->err &&
                         (result != NULL) &&
-                        (result->type == REDIS_REPLY_ERROR) &&
+                        (result->type == VALKEY_REPLY_ERROR) &&
                         (strncmp(result->str, "NOSCRIPT", 8) == 0)) {
                         // Replace EVALSHA with EVAL.
                         argv[0] = WS_Copy(ctx->ws, "EVAL", -1);
@@ -649,30 +649,30 @@ redis_execute(
                 // Send command, unless it was originally an EVAL command and it
                 // was already executed using EVALSHA.
                 if (!done) {
-                    result = get_redis_repy(ctx, context, timeout, argc, argv, asking);
+                    result = get_valkey_repy(ctx, context, timeout, argc, argv, asking);
                 }
 
                 // Log failed executions.
                 if (result == NULL) {
-                    REDIS_LOG_ERROR(ctx,
+                    VALKEY_LOG_ERROR(ctx,
                         "Failed to execute command (error=%d, command=%s, db=%s, server=%s): %s",
                         context->rcontext->err, argv[0], db->name,
                         context->server->location.raw,
-                        HIREDIS_ERRSTR(context->rcontext, result));
+                        VALKEY_ERRSTR(context->rcontext, result));
                 }
     unlock:
                 // Release context.
-                unlock_redis_context(ctx, db, state, context);
+                unlock_valkey_context(ctx, db, state, context);
 
                 // Check WS fail flag.
                 if (failed_ws) {
                     *retries = max_retries;
-                    REDIS_FAIL_WS(ctx, NULL);
+                    VALKEY_FAIL_WS(ctx, NULL);
                 }
 
             // Context not available.
             } else {
-                REDIS_LOG_ERROR(ctx,
+                VALKEY_LOG_ERROR(ctx,
                     "Failed to execute command (command=%s, db=%s): context not available",
                     argv[0], db->name);
             }
@@ -702,7 +702,7 @@ redis_execute(
     // Execution plan not available.
     } else {
         *retries = max_retries;
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Failed to execute command (command=%s, db=%s): execution plan not available",
             argv[0], db->name);
     }
@@ -711,29 +711,29 @@ redis_execute(
     return result;
 }
 
-redis_server_t *
-unsafe_add_redis_server(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config,
-    const char *location, enum REDIS_SERVER_ROLE role)
+valkey_server_t *
+unsafe_add_valkey_server(
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config,
+    const char *location, enum VALKEY_SERVER_ROLE role)
 {
     // Assertions.
     Lck_AssertHeld(&config->mutex);
     Lck_AssertHeld(&db->mutex);
 
     // Initializations.
-    redis_server_t *result = NULL;
+    valkey_server_t *result = NULL;
 
     // Look for a server matching the location. If found, remove if from the
     // list. It would be reinserted later, perhaps in a different list.
     for (unsigned iweight = 0;
-         result == NULL && iweight < NREDIS_SERVER_WEIGHTS;
+         result == NULL && iweight < NVALKEY_SERVER_WEIGHTS;
          iweight++) {
-        for (enum REDIS_SERVER_ROLE irole = 0;
-             result == NULL && irole < NREDIS_SERVER_ROLES;
+        for (enum VALKEY_SERVER_ROLE irole = 0;
+             result == NULL && irole < NVALKEY_SERVER_ROLES;
              irole++) {
-            redis_server_t *iserver;
+            valkey_server_t *iserver;
             VTAILQ_FOREACH(iserver, &db->servers[iweight][irole], list) {
-                CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
+                CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
                 if (strcmp(iserver->location.raw, location) == 0) {
                     VTAILQ_REMOVE(&db->servers[iweight][irole], iserver, list);
                     result = iserver;
@@ -746,20 +746,20 @@ unsafe_add_redis_server(
     // Create a new server instance?
     if (result == NULL) {
         // Create new instance.
-        result = new_redis_server(db, location, role);
+        result = new_valkey_server(db, location, role);
         if (result != NULL) {
             // If role is unknown try to discover it. This won't be retried. On
             // failures discovering the role the module will depend on other
-            // discovery capabilities such as Redis Sentinel or Redis Cluster.
-            if (result->role == REDIS_SERVER_TBD_ROLE) {
-                result->role = unsafe_discover_redis_server_role(ctx, result);
+            // discovery capabilities such as Valkey Sentinel or Valkey Cluster.
+            if (result->role == VALKEY_SERVER_TBD_ROLE) {
+                result->role = unsafe_discover_valkey_server_role(ctx, result);
             }
 
             // Calculate weight.
-            if (result->location.type == REDIS_SERVER_LOCATION_HOST_TYPE) {
+            if (result->location.type == VALKEY_SERVER_LOCATION_HOST_TYPE) {
                 struct in_addr ia4;
                 if (inet_pton(AF_INET, result->location.parsed.address.host, &ia4)) {
-                    result->weight = NREDIS_SERVER_WEIGHTS - 1;
+                    result->weight = NVALKEY_SERVER_WEIGHTS - 1;
                     subnet_t *isubnet;
                     VTAILQ_FOREACH(isubnet, &config->subnets, list) {
                         CHECK_OBJ_NOTNULL(isubnet, SUBNET_MAGIC);
@@ -770,21 +770,21 @@ unsafe_add_redis_server(
                         }
                     }
                 } else {
-                    result->weight = NREDIS_SERVER_WEIGHTS - 1;
+                    result->weight = NVALKEY_SERVER_WEIGHTS - 1;
                 }
             } else {
                 result->weight = 0;
             }
 
             // Log event.
-            REDIS_LOG_INFO(ctx,
+            VALKEY_LOG_INFO(ctx,
                 "New server registered (db=%s, server=%s, role=%d, weight=%d)",
                 db->name, result->location.raw, result->role, result->weight);
 
             // Update stats.
             db->stats.servers.total++;
         } else {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to register server (db=%s, server=%s)",
                 db->name, location);
             db->stats.servers.failed++;
@@ -795,10 +795,10 @@ unsafe_add_redis_server(
         // If role is unknown try to discover it. This won't be retried. On
         // failures the module stays with the info it has so far. Discovery of
         // the real role will depend on other discovery capabilities such as
-        // Redis Sentinel or Redis Cluster.
-        if (role == REDIS_SERVER_TBD_ROLE) {
-            enum REDIS_SERVER_ROLE r = unsafe_discover_redis_server_role(ctx, result);
-            if (r != REDIS_SERVER_TBD_ROLE) {
+        // Valkey Sentinel or Valkey Cluster.
+        if (role == VALKEY_SERVER_TBD_ROLE) {
+            enum VALKEY_SERVER_ROLE r = unsafe_discover_valkey_server_role(ctx, result);
+            if (r != VALKEY_SERVER_TBD_ROLE) {
                 result->role = r;
             }
         } else {
@@ -812,7 +812,7 @@ unsafe_add_redis_server(
         }
 
         // Log event.
-        REDIS_LOG_INFO(ctx,
+        VALKEY_LOG_INFO(ctx,
             "Server updated (db=%s, server=%s, role=%d, weight=%d)",
             db->name, result->location.raw, result->role, result->weight);
     }
@@ -834,28 +834,28 @@ unsafe_add_redis_server(
  * UTILITIES.
  *****************************************************************************/
 
-static redisContext *
+static valkeyContext *
 new_rcontext(
-    VRT_CTX, redis_server_t * server, time_t now,
+    VRT_CTX, valkey_server_t * server, time_t now,
     unsigned ephemeral, unsigned dblocked)
 {
     // Assertions.
     if (dblocked) Lck_AssertHeld(&server->db->mutex);
 
     // Create context.
-    redisContext *result;
+    valkeyContext *result;
     if ((server->db->connection_timeout.tv_sec > 0) ||
         (server->db->connection_timeout.tv_usec > 0)) {
         switch (server->location.type) {
-            case REDIS_SERVER_LOCATION_HOST_TYPE:
-                result = redisConnectWithTimeout(
+            case VALKEY_SERVER_LOCATION_HOST_TYPE:
+                result = valkeyConnectWithTimeout(
                     server->location.parsed.address.host,
                     server->location.parsed.address.port,
                     server->db->connection_timeout);
                 break;
 
-            case REDIS_SERVER_LOCATION_SOCKET_TYPE:
-                result = redisConnectUnixWithTimeout(
+            case VALKEY_SERVER_LOCATION_SOCKET_TYPE:
+                result = valkeyConnectUnixWithTimeout(
                     server->location.parsed.path,
                     server->db->connection_timeout);
                 break;
@@ -865,14 +865,14 @@ new_rcontext(
         }
     } else {
         switch (server->location.type) {
-            case REDIS_SERVER_LOCATION_HOST_TYPE:
-                result = redisConnect(
+            case VALKEY_SERVER_LOCATION_HOST_TYPE:
+                result = valkeyConnect(
                     server->location.parsed.address.host,
                     server->location.parsed.address.port);
                 break;
 
-            case REDIS_SERVER_LOCATION_SOCKET_TYPE:
-                result = redisConnectUnix(
+            case VALKEY_SERVER_LOCATION_SOCKET_TYPE:
+                result = valkeyConnectUnix(
                     server->location.parsed.path);
                 break;
 
@@ -884,17 +884,17 @@ new_rcontext(
 
     // Check created context.
     if (result->err) {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Failed to establish connection (error=%d, db=%s, server=%s): %s",
             result->err, server->db->name, server->location.raw,
-            HIREDIS_ERRSTR(result));
-        redisFree(result);
+            VALKEY_ERRSTR(result));
+        valkeyFree(result);
         result = NULL;
     }
 
     // Optionally setup TLS & submit AUTH / HELLO command.
     if (result != NULL) {
-        REDIS_BLESS_CONTEXT(
+        VALKEY_BLESS_CONTEXT(
             ctx, result, server->db,
             "Failed to initialize connection",
             "db=%s, server=%s",
@@ -906,7 +906,7 @@ new_rcontext(
     if (result != NULL) {
         if (server->sickness.exp > now) {
             server->sickness.exp = now;
-            REDIS_LOG_INFO(ctx,
+            VALKEY_LOG_INFO(ctx,
                 "Server sickness tag cleared (db=%s, server=%s)",
                 server->db->name, server->location.raw);
         }
@@ -917,7 +917,7 @@ new_rcontext(
         if (server->db->sickness_ttl > 0) {
             server->sickness.tst = now;
             server->sickness.exp = now + server->db->sickness_ttl;
-            REDIS_LOG_INFO(ctx,
+            VALKEY_LOG_INFO(ctx,
                 "Server sickness tag set (db=%s, server=%s)",
                 server->db->name, server->location.raw);
         }
@@ -927,11 +927,11 @@ new_rcontext(
     }
     if (!dblocked) Lck_Unlock(&server->db->mutex);
 
-#if HIREDIS_MAJOR >= 0 && HIREDIS_MINOR >= 12
+#if LIBVALKEY_MAJOR >= 0 && LIBVALKEY_MINOR >= 1
     // Enable TCP keep-alive.
     if ((result != NULL) &&
-        (server->location.type == REDIS_SERVER_LOCATION_HOST_TYPE)) {
-        redisEnableKeepAlive(result);
+        (server->location.type == VALKEY_SERVER_LOCATION_HOST_TYPE)) {
+        valkeyEnableKeepAlive(result);
     }
 #endif
 
@@ -939,50 +939,50 @@ new_rcontext(
     return result;
 }
 
-static enum REDIS_SERVER_ROLE
-unsafe_discover_redis_server_role(VRT_CTX, redis_server_t *server)
+static enum VALKEY_SERVER_ROLE
+unsafe_discover_valkey_server_role(VRT_CTX, valkey_server_t *server)
 {
     // Assertions.
     Lck_AssertHeld(&server->db->mutex);
 
     // Initializations.
-    enum REDIS_SERVER_ROLE result = REDIS_SERVER_TBD_ROLE;
+    enum VALKEY_SERVER_ROLE result = VALKEY_SERVER_TBD_ROLE;
 
     // Create context.
-    redisContext *rcontext = new_rcontext(ctx, server, time(NULL), 1, 1);
+    valkeyContext *rcontext = new_rcontext(ctx, server, time(NULL), 1, 1);
     if ((rcontext != NULL) && (!rcontext->err)) {
         // Set command execution timeout.
-        int tr = redisSetTimeout(rcontext, server->db->command_timeout);
-        if (tr != REDIS_OK) {
-            REDIS_LOG_ERROR(ctx,
+        int tr = valkeySetTimeout(rcontext, server->db->command_timeout);
+        if (tr != VALKEY_OK) {
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to set role discovery command execution timeout (error=%d, db=%s, server=%s)",
                 tr, server->db->name, server->location.raw);
         }
 
         // Send command.
-        redisReply *reply = redisCommand(rcontext, ROLE_DISCOVERY_COMMAND);
+        valkeyReply *reply = valkeyCommand(rcontext, ROLE_DISCOVERY_COMMAND);
 
         // Check reply.
         if ((!rcontext->err) &&
             (reply != NULL) &&
-            (reply->type == REDIS_REPLY_ARRAY) &&
+            (reply->type == VALKEY_REPLY_ARRAY) &&
             (reply->elements > 0) &&
-            (reply->element[0]->type == REDIS_REPLY_STRING)) {
+            (reply->element[0]->type == VALKEY_REPLY_STRING)) {
             if (strcmp(reply->element[0]->str, "master") == 0) {
-                result = REDIS_SERVER_MASTER_ROLE;
+                result = VALKEY_SERVER_MASTER_ROLE;
             } else if (strcmp(reply->element[0]->str, "slave") == 0) {
-                result = REDIS_SERVER_SLAVE_ROLE;
+                result = VALKEY_SERVER_SLAVE_ROLE;
             }
-            if (result != REDIS_SERVER_TBD_ROLE) {
-                REDIS_LOG_INFO(ctx,
+            if (result != VALKEY_SERVER_TBD_ROLE) {
+                VALKEY_LOG_INFO(ctx,
                     "Server role discovered (db=%s, server=%s, role=%d)",
                     server->db->name, server->location.raw, result);
             }
         } else {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to execute role discovery command (error=%d, db=%s, server=%s): %s",
                 rcontext, server->db->name, server->location.raw,
-                HIREDIS_ERRSTR(rcontext, reply));
+                VALKEY_ERRSTR(rcontext, reply));
         }
 
         // Release reply.
@@ -991,12 +991,12 @@ unsafe_discover_redis_server_role(VRT_CTX, redis_server_t *server)
         }
     } else {
         if (rcontext != NULL) {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to establish role discovery connection (error=%d, db=%s, server=%s): %s",
                 rcontext->err, server->db->name, server->location.raw,
-                HIREDIS_ERRSTR(rcontext));
+                VALKEY_ERRSTR(rcontext));
         } else {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to establish role discovery connection (db=%s, server=%s)",
                 server->db->name, server->location.raw);
         }
@@ -1004,7 +1004,7 @@ unsafe_discover_redis_server_role(VRT_CTX, redis_server_t *server)
 
     // Release context.
     if (rcontext != NULL) {
-        redisFree(rcontext);
+        valkeyFree(rcontext);
     }
 
     // Done!
@@ -1012,7 +1012,7 @@ unsafe_discover_redis_server_role(VRT_CTX, redis_server_t *server)
 }
 
 static unsigned
-is_valid_redis_context(redis_context_t *context, time_t now, unsigned dblocked)
+is_valid_valkey_context(valkey_context_t *context, time_t now, unsigned dblocked)
 {
     // Assertions.
     if (dblocked) Lck_AssertHeld(&context->server->db->mutex);
@@ -1073,11 +1073,11 @@ is_valid_redis_context(redis_context_t *context, time_t now, unsigned dblocked)
 }
 
 static struct plan *
-new_execution_plan(VRT_CTX, struct vmod_redis_db *db)
+new_execution_plan(VRT_CTX, struct vmod_valkey_db *db)
 {
     struct plan *result = (void *)WS_Alloc(ctx->ws, sizeof(struct plan));
     if (result == NULL) {
-        REDIS_FAIL_WS(ctx, NULL);
+        VALKEY_FAIL_WS(ctx, NULL);
     }
 
     result->contexts.n = 0;
@@ -1093,8 +1093,8 @@ new_execution_plan(VRT_CTX, struct vmod_redis_db *db)
 
 void
 populate_simple_execution_plan(
-    VRT_CTX, struct plan *plan, struct vmod_redis_db *db, task_state_t *state,
-    unsigned max_size, redis_server_t *server)
+    VRT_CTX, struct plan *plan, struct vmod_valkey_db *db, task_state_t *state,
+    unsigned max_size, valkey_server_t *server)
 {
     // Populate list of contexts?
     if (!db->shared_connections) {
@@ -1102,30 +1102,30 @@ populate_simple_execution_plan(
         time_t now = time(NULL);
         unsigned free_ws = WS_Reserve(ctx->ws, 0);
         unsigned used_ws = 0;
-        plan->contexts.list = (redis_context_t **) WS_Front(ctx->ws);
+        plan->contexts.list = (valkey_context_t **) WS_Front(ctx->ws);
         plan->contexts.n = 0;
 
         // Search for contexts matching the requested conditions.
-        redis_context_t *icontext, *icontext_tmp;
+        valkey_context_t *icontext, *icontext_tmp;
         VTAILQ_FOREACH_SAFE(icontext, &state->contexts, list, icontext_tmp) {
-            CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+            CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
             if ((icontext->server->db == db) &&
                 (icontext->server == server)) {
-                if (is_valid_redis_context(icontext, now, 0)) {
-                    if (free_ws >= sizeof(redis_context_t *)) {
-                        used_ws += sizeof(redis_context_t *);
+                if (is_valid_valkey_context(icontext, now, 0)) {
+                    if (free_ws >= sizeof(valkey_context_t *)) {
+                        used_ws += sizeof(valkey_context_t *);
                         plan->contexts.list[plan->contexts.n++] = icontext;
                         if (plan->contexts.n == max_size) {
                             break;
                         }
                     } else {
                         WS_Release(ctx->ws, 0);
-                        REDIS_FAIL_WS(ctx, );
+                        VALKEY_FAIL_WS(ctx, );
                     }
                 } else {
                     VTAILQ_REMOVE(&state->contexts, icontext, list);
                     state->ncontexts--;
-                    free_redis_context(icontext);
+                    free_valkey_context(icontext);
                 }
             }
         }
@@ -1136,20 +1136,20 @@ populate_simple_execution_plan(
 
     // Build list of servers.
     unsigned free_ws = WS_Reserve(ctx->ws, 0);
-    if (free_ws >= sizeof(redis_server_t *)) {
-        plan->servers.list = (redis_server_t **) WS_Front(ctx->ws);
+    if (free_ws >= sizeof(valkey_server_t *)) {
+        plan->servers.list = (valkey_server_t **) WS_Front(ctx->ws);
         plan->servers.n = 1;
         plan->servers.list[0] = server;
-        WS_Release(ctx->ws, sizeof(redis_server_t *));
+        WS_Release(ctx->ws, sizeof(valkey_server_t *));
     } else {
         WS_Release(ctx->ws, 0);
-        REDIS_FAIL_WS(ctx, );
+        VALKEY_FAIL_WS(ctx, );
     }
 }
 
 void
 populate_execution_plan(
-    VRT_CTX, struct plan *plan, struct vmod_redis_db *db, task_state_t *state,
+    VRT_CTX, struct plan *plan, struct vmod_valkey_db *db, task_state_t *state,
     unsigned max_size, unsigned master, unsigned slot)
 {
     // Initializations.
@@ -1160,33 +1160,33 @@ populate_execution_plan(
         // Initializations.
         unsigned free_ws = WS_Reserve(ctx->ws, 0);
         unsigned used_ws = 0;
-        plan->contexts.list = (redis_context_t **) WS_Front(ctx->ws);
+        plan->contexts.list = (valkey_context_t **) WS_Front(ctx->ws);
         plan->contexts.n = 0;
 
         // Search for contexts matching the requested conditions.
-        redis_context_t *icontext, *icontext_tmp;
+        valkey_context_t *icontext, *icontext_tmp;
         VTAILQ_FOREACH_SAFE(icontext, &state->contexts, list, icontext_tmp) {
-            CHECK_OBJ_NOTNULL(icontext, REDIS_CONTEXT_MAGIC);
+            CHECK_OBJ_NOTNULL(icontext, VALKEY_CONTEXT_MAGIC);
             if ((icontext->server->db == db) &&
-                ((master && (icontext->server->role == REDIS_SERVER_MASTER_ROLE)) ||
-                 (!master && (icontext->server->role != REDIS_SERVER_MASTER_ROLE))) &&
+                ((master && (icontext->server->role == VALKEY_SERVER_MASTER_ROLE)) ||
+                 (!master && (icontext->server->role != VALKEY_SERVER_MASTER_ROLE))) &&
                 ((!db->cluster.enabled) ||
                  (icontext->server->cluster.slots[slot]))) {
-                if (is_valid_redis_context(icontext, now, 0)) {
-                    if (free_ws >= sizeof(redis_context_t *)) {
-                        used_ws += sizeof(redis_context_t *);
+                if (is_valid_valkey_context(icontext, now, 0)) {
+                    if (free_ws >= sizeof(valkey_context_t *)) {
+                        used_ws += sizeof(valkey_context_t *);
                         plan->contexts.list[plan->contexts.n++] = icontext;
                         if (plan->contexts.n == max_size) {
                             break;
                         }
                     } else {
                         WS_Release(ctx->ws, 0);
-                        REDIS_FAIL_WS(ctx, );
+                        VALKEY_FAIL_WS(ctx, );
                     }
                 } else {
                     VTAILQ_REMOVE(&state->contexts, icontext, list);
                     state->ncontexts--;
-                    free_redis_context(icontext);
+                    free_valkey_context(icontext);
                 }
             }
         }
@@ -1209,7 +1209,7 @@ populate_execution_plan(
         unsigned remaining = max_size - plan->contexts.n;
         unsigned free_ws = WS_Reserve(ctx->ws, 0);
         unsigned used_ws = 0;
-        plan->servers.list = (redis_server_t **) WS_Front(ctx->ws);
+        plan->servers.list = (valkey_server_t **) WS_Front(ctx->ws);
         plan->servers.n = 0;
 
         // Get database lock.
@@ -1227,21 +1227,21 @@ populate_execution_plan(
         //       + Consider sick and TBD servers skipped during the first round.
         for (unsigned round = 1; round <= (db->cluster.enabled ? 1 : 2); round++) {
             for (unsigned iweight = 0;
-                 remaining > 0 && iweight < NREDIS_SERVER_WEIGHTS;
+                 remaining > 0 && iweight < NVALKEY_SERVER_WEIGHTS;
                  iweight++) {
-                for (enum REDIS_SERVER_ROLE irole = 0;
-                     remaining > 0 && irole < NREDIS_SERVER_ROLES;
+                for (enum VALKEY_SERVER_ROLE irole = 0;
+                     remaining > 0 && irole < NVALKEY_SERVER_ROLES;
                      irole++) {
                     if ((!master) ||
                         (((round == 1) &&
-                          (irole == REDIS_SERVER_MASTER_ROLE)) ||
+                          (irole == VALKEY_SERVER_MASTER_ROLE)) ||
                          ((round == 2) &&
-                          ((irole == REDIS_SERVER_MASTER_ROLE) ||
-                           (irole == REDIS_SERVER_TBD_ROLE))))) {
+                          ((irole == VALKEY_SERVER_MASTER_ROLE) ||
+                           (irole == VALKEY_SERVER_TBD_ROLE))))) {
                         unsigned nservers = plan->servers.n;
-                        redis_server_t *iserver;
+                        valkey_server_t *iserver;
                         VTAILQ_FOREACH(iserver, &db->servers[iweight][irole], list) {
-                            CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
+                            CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
                             assert(iserver->weight == iweight);
                             assert(iserver->role == irole);
                             if (((!db->cluster.enabled) ||
@@ -1250,17 +1250,17 @@ populate_execution_plan(
                                   (iserver->sickness.exp <= now)) ||
                                  ((round == 2) &&
                                   (((master) &&
-                                    (iserver->role == REDIS_SERVER_TBD_ROLE)) ||
+                                    (iserver->role == VALKEY_SERVER_TBD_ROLE)) ||
                                    (iserver->sickness.exp > now))))) {
-                                if (free_ws >= sizeof(redis_server_t *)) {
-                                    used_ws += sizeof(redis_server_t *);
+                                if (free_ws >= sizeof(valkey_server_t *)) {
+                                    used_ws += sizeof(valkey_server_t *);
                                     plan->servers.list[plan->servers.n++] = iserver;
                                     if (--remaining == 0) {
                                         break;
                                     }
                                 } else {
                                     WS_Release(ctx->ws, 0);
-                                    REDIS_FAIL_WS(ctx, );
+                                    VALKEY_FAIL_WS(ctx, );
                                 }
                             }
                         }
@@ -1297,29 +1297,29 @@ populate_execution_plan(
         if ((db->cluster.enabled) && (plan->servers.n == 0)) {
             for (unsigned round = 3; round <= 4; round++) {
                 for (unsigned iweight = 0;
-                     remaining > 0 && iweight < NREDIS_SERVER_WEIGHTS;
+                     remaining > 0 && iweight < NVALKEY_SERVER_WEIGHTS;
                      iweight++) {
-                    for (enum REDIS_SERVER_ROLE irole = 0;
-                         remaining > 0 && irole < NREDIS_SERVER_ROLES;
+                    for (enum VALKEY_SERVER_ROLE irole = 0;
+                         remaining > 0 && irole < NVALKEY_SERVER_ROLES;
                          irole++) {
-                        redis_server_t *iserver;
+                        valkey_server_t *iserver;
                         VTAILQ_FOREACH(iserver, &db->servers[iweight][irole], list) {
-                            CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
+                            CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
                             assert(iserver->weight == iweight);
                             assert(iserver->role == irole);
                             if (((round == 3) &&
                                  (iserver->sickness.exp <= now)) ||
                                 ((round == 4) &&
                                  (iserver->sickness.exp > now))) {
-                                if (free_ws >= sizeof(redis_server_t *)) {
-                                    used_ws += sizeof(redis_server_t *);
+                                if (free_ws >= sizeof(valkey_server_t *)) {
+                                    used_ws += sizeof(valkey_server_t *);
                                     plan->servers.list[plan->servers.n++] = iserver;
                                     if (--remaining == 0) {
                                         break;
                                     }
                                 } else {
                                     WS_Release(ctx->ws, 0);
-                                    REDIS_FAIL_WS(ctx, );
+                                    VALKEY_FAIL_WS(ctx, );
                                 }
                             }
                         }
@@ -1338,8 +1338,8 @@ populate_execution_plan(
 
 static struct plan *
 plan_execution(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state,
-    unsigned max_size, redis_server_t *server, unsigned master, unsigned slot)
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state,
+    unsigned max_size, valkey_server_t *server, unsigned master, unsigned slot)
 {
     // Initializations.
     struct plan *result = new_execution_plan(ctx, db);
@@ -1358,12 +1358,12 @@ plan_execution(
     return result;
 }
 
-static redis_context_t *
-lock_private_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state, struct plan *plan)
+static valkey_context_t *
+lock_private_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state, struct plan *plan)
 {
     // Initializations.
-    redis_context_t *result = NULL;
+    valkey_context_t *result = NULL;
 
     // Is there any context in the execution plan?
     if (plan->contexts.next < plan->contexts.n) {
@@ -1377,16 +1377,16 @@ lock_private_redis_context(
 
         // Select next server in the execution plan.
         assert(plan->servers.next < plan->servers.n);
-        redis_server_t *server = plan->servers.list[plan->servers.next];
+        valkey_server_t *server = plan->servers.list[plan->servers.next];
         plan->servers.next = (plan->servers.next + 1) % plan->servers.n;
 
         // If an empty slot is not available, release an existing context.
         if (state->ncontexts >= db->max_connections) {
-            redis_context_t *context = VTAILQ_FIRST(&state->contexts);
-            CHECK_OBJ_NOTNULL(context, REDIS_CONTEXT_MAGIC);
+            valkey_context_t *context = VTAILQ_FIRST(&state->contexts);
+            CHECK_OBJ_NOTNULL(context, VALKEY_CONTEXT_MAGIC);
             VTAILQ_REMOVE(&state->contexts, context, list);
             state->ncontexts--;
-            free_redis_context(context);
+            free_valkey_context(context);
             Lck_Lock(&db->mutex);
             db->stats.connections.dropped.overflow++;
             Lck_Unlock(&db->mutex);
@@ -1394,9 +1394,9 @@ lock_private_redis_context(
 
         // Create new context using the previously selected server. If any
         // error arises discard the context and return.
-        redisContext *rcontext = new_rcontext(ctx, server, now, 0, 0);
+        valkeyContext *rcontext = new_rcontext(ctx, server, now, 0, 0);
         if (rcontext != NULL) {
-            result = new_redis_context(server, rcontext, now);
+            result = new_valkey_context(server, rcontext, now);
             VTAILQ_INSERT_TAIL(&state->contexts, result, list);
             state->ncontexts++;
         }
@@ -1406,17 +1406,17 @@ lock_private_redis_context(
     return result;
 }
 
-static redis_context_t *
-lock_shared_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state, struct plan *plan)
+static valkey_context_t *
+lock_shared_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state, struct plan *plan)
 {
     // Initializations.
-    redis_context_t *result = NULL;
+    valkey_context_t *result = NULL;
     time_t now = time(NULL);
 
     // Select next server in the execution plan.
     assert(plan->servers.next < plan->servers.n);
-    redis_server_t *server = plan->servers.list[plan->servers.next];
+    valkey_server_t *server = plan->servers.list[plan->servers.next];
     plan->servers.next = (plan->servers.next + 1) % plan->servers.n;
 
     // Get database lock.
@@ -1427,18 +1427,18 @@ retry:
     while (!VTAILQ_EMPTY(&server->pool.free_contexts)) {
         // Extract context.
         result = VTAILQ_FIRST(&server->pool.free_contexts);
-        CHECK_OBJ_NOTNULL(result, REDIS_CONTEXT_MAGIC);
+        CHECK_OBJ_NOTNULL(result, VALKEY_CONTEXT_MAGIC);
 
         // Mark the context as busy.
         VTAILQ_REMOVE(&server->pool.free_contexts, result, list);
         VTAILQ_INSERT_TAIL(&server->pool.busy_contexts, result, list);
 
         // Is the context valid?
-        if (!is_valid_redis_context(result, now, 1)) {
+        if (!is_valid_valkey_context(result, now, 1)) {
             // Release context.
             VTAILQ_REMOVE(&server->pool.busy_contexts, result, list);
             server->pool.ncontexts--;
-            free_redis_context(result);
+            free_valkey_context(result);
 
             // A new context needs to be selected.
             result = NULL;
@@ -1462,9 +1462,9 @@ retry:
 
         // Create new context using the previously selected server. If any
         // error arises discard the context and return.
-        redisContext *rcontext = new_rcontext(ctx, server, now, 0, 1);
+        valkeyContext *rcontext = new_rcontext(ctx, server, now, 0, 1);
         if (rcontext != NULL) {
-            result = new_redis_context(server, rcontext, now);
+            result = new_valkey_context(server, rcontext, now);
             VTAILQ_INSERT_TAIL(&server->pool.busy_contexts, result, list);
             server->pool.ncontexts++;
         }
@@ -1477,24 +1477,24 @@ retry:
     return result;
 }
 
-static redis_context_t *
-lock_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state, struct plan *plan)
+static valkey_context_t *
+lock_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state, struct plan *plan)
 {
     if (db->shared_connections) {
-        return lock_shared_redis_context(ctx, db, state, plan);
+        return lock_shared_valkey_context(ctx, db, state, plan);
     } else {
-        return lock_private_redis_context(ctx, db, state, plan);
+        return lock_private_valkey_context(ctx, db, state, plan);
     }
 }
 
 static void
-unlock_shared_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, redis_context_t *context)
+unlock_shared_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, valkey_context_t *context)
 {
     // Assertions.
-    CHECK_OBJ_NOTNULL(context, REDIS_CONTEXT_MAGIC);
-    CHECK_OBJ_NOTNULL(context->server, REDIS_SERVER_MAGIC);
+    CHECK_OBJ_NOTNULL(context, VALKEY_CONTEXT_MAGIC);
+    CHECK_OBJ_NOTNULL(context->server, VALKEY_SERVER_MAGIC);
 
     // Return context to the pool's free list.
     Lck_Lock(&context->server->db->mutex);
@@ -1505,50 +1505,50 @@ unlock_shared_redis_context(
 }
 
 static void
-unlock_redis_context(
-    VRT_CTX, struct vmod_redis_db *db, task_state_t *state,  redis_context_t *context)
+unlock_valkey_context(
+    VRT_CTX, struct vmod_valkey_db *db, task_state_t *state,  valkey_context_t *context)
 {
     if (db->shared_connections) {
-        return unlock_shared_redis_context(ctx, db, context);
+        return unlock_shared_valkey_context(ctx, db, context);
     }
 }
 
-static redisReply *
-get_redis_repy(
-    VRT_CTX, redis_context_t *context, struct timeval timeout, unsigned argc,
+static valkeyReply *
+get_valkey_repy(
+    VRT_CTX, valkey_context_t *context, struct timeval timeout, unsigned argc,
     const char *argv[], unsigned asking)
 {
     // Initializations.
-    redisReply *result = NULL;
-    redisReply *reply;
+    valkeyReply *result = NULL;
+    valkeyReply *reply;
     unsigned readonly =
         ((context->server->db->cluster.enabled) &&
-         (context->server->role == REDIS_SERVER_SLAVE_ROLE));
+         (context->server->role == VALKEY_SERVER_SLAVE_ROLE));
 
     // Set command execution timeout.
-    int tr = redisSetTimeout(context->rcontext, timeout);
-    if (tr != REDIS_OK) {
-        REDIS_LOG_ERROR(ctx,
+    int tr = valkeySetTimeout(context->rcontext, timeout);
+    if (tr != VALKEY_OK) {
+        VALKEY_LOG_ERROR(ctx,
             "Failed to set command execution timeout (error=%d, db=%s, server=%s)",
             tr, context->server->db->name, context->server->location.raw);
     }
 
     // Build pipeline.
     if (readonly) {
-        redisAppendCommand(context->rcontext, "READONLY");
+        valkeyAppendCommand(context->rcontext, "READONLY");
     }
     if (asking) {
-        redisAppendCommand(context->rcontext, "ASKING");
+        valkeyAppendCommand(context->rcontext, "ASKING");
     }
-    redisAppendCommandArgv(context->rcontext, argc, argv, NULL);
+    valkeyAppendCommandArgv(context->rcontext, argc, argv, NULL);
     if (readonly) {
-        redisAppendCommand(context->rcontext, "READWRITE");
+        valkeyAppendCommand(context->rcontext, "READWRITE");
     }
 
     // Fetch READONLY command reply?
     if (readonly) {
         reply = NULL;
-        redisGetReply(context->rcontext, (void **)&reply);
+        valkeyGetReply(context->rcontext, (void **)&reply);
         if (reply != NULL) {
             freeReplyObject(reply);
         }
@@ -1557,19 +1557,19 @@ get_redis_repy(
     // Fetch ASKING command reply.
     if (asking) {
         reply = NULL;
-        redisGetReply(context->rcontext, (void **)&reply);
+        valkeyGetReply(context->rcontext, (void **)&reply);
         if (reply != NULL) {
             freeReplyObject(reply);
         }
     }
 
     // Fetch command reply.
-    redisGetReply(context->rcontext, (void **)&result);
+    valkeyGetReply(context->rcontext, (void **)&result);
 
     // Fetch READWRITE command reply?
     if (readonly) {
         reply = NULL;
-        redisGetReply(context->rcontext, (void **)&reply);
+        valkeyGetReply(context->rcontext, (void **)&reply);
         if (reply != NULL) {
             freeReplyObject(reply);
         }

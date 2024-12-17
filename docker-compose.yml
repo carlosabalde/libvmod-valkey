@@ -8,13 +8,13 @@
 #     $ ./autogen.sh
 #     $ ./configure
 #     $ make
-#     $ DB_ENGINE=valkey make check
+#     $ make check
 #   $ docker compose down --volumes --remove-orphans
 #
 
 version: '3.7'
 
-name: libvmod-redis-6_0
+name: libvmod-valkey-6_0
 
 services:
   dev:

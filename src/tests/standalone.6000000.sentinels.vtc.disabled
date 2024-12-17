@@ -10,81 +10,81 @@ delay 15
 
 # Varnish configured with no password to connect to sentinels.
 varnish v1 -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={"
-                ${redis_sentinel1_ip}:${redis_sentinel1_tls_port},
-                ${redis_sentinel2_ip}:${redis_sentinel2_tls_port},
-                ${redis_sentinel3_ip}:${redis_sentinel3_tls_port}
+                ${valkey_sentinel1_ip}:${valkey_sentinel1_tls_port},
+                ${valkey_sentinel2_ip}:${valkey_sentinel2_tls_port},
+                ${valkey_sentinel3_ip}:${valkey_sentinel3_tls_port}
             "},
             period=3,
             connection_timeout=500,
             command_timeout=0,
             protocol=RESP3,
             tls=true,
-            tls_cafile="${redis_tls_cafile}",
-            tls_certfile="${redis_tls_certfile}",
-            tls_keyfile="${redis_tls_keyfile}");
+            tls_cafile="${valkey_tls_cafile}",
+            tls_certfile="${valkey_tls_certfile}",
+            tls_keyfile="${valkey_tls_keyfile}");
     }
 } -start
 
 # Varnish configured with an incorrect password to connect to sentinels.
 varnish v2 -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={"
-                ${redis_sentinel1_ip}:${redis_sentinel1_tls_port},
-                ${redis_sentinel2_ip}:${redis_sentinel2_tls_port},
-                ${redis_sentinel3_ip}:${redis_sentinel3_tls_port}
+                ${valkey_sentinel1_ip}:${valkey_sentinel1_tls_port},
+                ${valkey_sentinel2_ip}:${valkey_sentinel2_tls_port},
+                ${valkey_sentinel3_ip}:${valkey_sentinel3_tls_port}
             "},
             period=3,
             connection_timeout=500,
             command_timeout=0,
             protocol=RESP3,
             tls=true,
-            tls_cafile="${redis_tls_cafile}",
-            tls_certfile="${redis_tls_certfile}",
-            tls_keyfile="${redis_tls_keyfile}",
+            tls_cafile="${valkey_tls_cafile}",
+            tls_certfile="${valkey_tls_certfile}",
+            tls_keyfile="${valkey_tls_keyfile}",
             password="wrong-password");
     }
 } -start
 
 # Varnish configured with a correct password to connect to sentinels.
 varnish v3 -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={"
-                ${redis_sentinel1_ip}:${redis_sentinel1_tls_port},
-                ${redis_sentinel2_ip}:${redis_sentinel2_tls_port},
-                ${redis_sentinel3_ip}:${redis_sentinel3_tls_port}
+                ${valkey_sentinel1_ip}:${valkey_sentinel1_tls_port},
+                ${valkey_sentinel2_ip}:${valkey_sentinel2_tls_port},
+                ${valkey_sentinel3_ip}:${valkey_sentinel3_tls_port}
             "},
             period=3,
             connection_timeout=500,
             command_timeout=0,
             protocol=RESP3,
             tls=true,
-            tls_cafile="${redis_tls_cafile}",
-            tls_certfile="${redis_tls_certfile}",
-            tls_keyfile="${redis_tls_keyfile}",
+            tls_cafile="${valkey_tls_cafile}",
+            tls_certfile="${valkey_tls_certfile}",
+            tls_keyfile="${valkey_tls_keyfile}",
             password="s3cr3t");
 
-        new db = redis.db(
-            location="${redis_master1_ip}:${redis_master1_tls_port}",
+        new db = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_tls_port}",
             type=auto,
             connection_timeout=500,
             connection_ttl=0,
@@ -94,15 +94,15 @@ varnish v3 -vcl+backend {
             max_connections=2,
             protocol=RESP3,
             tls=true,
-            tls_cafile="${redis_tls_cafile}",
-            tls_certfile="${redis_tls_certfile}",
-            tls_keyfile="${redis_tls_keyfile}",
+            tls_cafile="${valkey_tls_cafile}",
+            tls_certfile="${valkey_tls_certfile}",
+            tls_keyfile="${valkey_tls_keyfile}",
             password="",
             sickness_ttl=0,
             ignore_slaves=false,
             max_cluster_hops=0);
-        db.add_server("${redis_slave1_1_ip}:${redis_slave1_1_tls_port}", auto);
-        db.add_server("${redis_slave1_2_ip}:${redis_slave1_2_tls_port}", auto);
+        db.add_server("${valkey_slave1_1_ip}:${valkey_slave1_1_tls_port}", auto);
+        db.add_server("${valkey_slave1_2_ip}:${valkey_slave1_2_tls_port}", auto);
     }
 
     sub vcl_deliver {
@@ -127,9 +127,9 @@ client c1 -connect ${v1_sock} {
 } -run
 
 logexpect l1 {
-    expect * 0 VCL_Error   {^\[REDIS\]\[helloCallback:.*Failed to negotiate protocol in Sentinel connection.*NOAUTH.*}
-    expect * 0 VCL_Error   {^\[REDIS\]\[disconnectCallback:.*Sentinel connection lost.*NOAUTH.*}
-    expect * 0 VCL_Error   {^\[REDIS\]\[discover_servers:.*Failed to execute Sentinel HELLO command.*NOAUTH.*}
+    expect * 0 VCL_Error   {^\[VALKEY\]\[helloCallback:.*Failed to negotiate protocol in Sentinel connection.*NOAUTH.*}
+    expect * 0 VCL_Error   {^\[VALKEY\]\[disconnectCallback:.*Sentinel connection lost.*NOAUTH.*}
+    expect * 0 VCL_Error   {^\[VALKEY\]\[discover_servers:.*Failed to execute Sentinel HELLO command.*NOAUTH.*}
 } -start
 
 logexpect l1 -wait
@@ -142,9 +142,9 @@ client c2 -connect ${v2_sock} {
 } -run
 
 logexpect l2 {
-    expect * 0 VCL_Error   {^\[REDIS\]\[authorizeCallback:.*Failed to authenticate Sentinel connection.*WRONGPASS.*}
-    expect * 0 VCL_Error   {^\[REDIS\]\[disconnectCallback:.*Sentinel connection lost.*NOAUTH.*}
-    expect * 0 VCL_Error   {^\[REDIS\]\[discover_servers:.*Failed to execute Sentinel AUTH command.*WRONGPASS.*}
+    expect * 0 VCL_Error   {^\[VALKEY\]\[authorizeCallback:.*Failed to authenticate Sentinel connection.*WRONGPASS.*}
+    expect * 0 VCL_Error   {^\[VALKEY\]\[disconnectCallback:.*Sentinel connection lost.*NOAUTH.*}
+    expect * 0 VCL_Error   {^\[VALKEY\]\[discover_servers:.*Failed to execute Sentinel AUTH command.*WRONGPASS.*}
 } -start
 
 logexpect l2 -wait

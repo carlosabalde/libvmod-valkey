@@ -5,7 +5,6 @@
 ##
 IPV6=0
 
-DB_ENGINE=${DB_ENGINE:-redis}
 DB_STANDALONE_MASTER_SERVERS=2
 DB_STANDALONE_SLAVE_SERVERS=2
 DB_STANDALONE_SENTINEL_SERVERS=3
@@ -64,14 +63,14 @@ trap "cleanup $TMP" EXIT
 ##
 ## Check CLI is available & get DB version. Fail test if DB is not available.
 ##
-if [ -x "$(command -v $DB_ENGINE-cli)" ]; then
-    VERSION=$($DB_ENGINE-cli --version | sed "s/^$DB_ENGINE-cli \([^ ]*\).*$/\1/" | awk -F. '{ printf("%d%03d%03d\n", $1, $2, $3) }')
+if [ -x "$(command -v valkey-cli)" ]; then
+    VERSION=$(valkey-cli --version | sed "s/^valkey-cli \([^ ]*\).*$/\1/" | awk -F. '{ printf("%d%03d%03d\n", $1, $2, $3) }')
     CONTEXT="\
         $CONTEXT \
-        -Dredis_version=$VERSION \
-        -Dredis_tls_cafile=$ROOT/assets/tls-ca-certificate.crt \
-        -Dredis_tls_certfile=$ROOT/assets/tls-certificate.crt \
-        -Dredis_tls_keyfile=$ROOT/assets/tls-certificate.key"
+        -Dvalkey_version=$VERSION \
+        -Dvalkey_tls_cafile=$ROOT/assets/tls-ca-certificate.crt \
+        -Dvalkey_tls_certfile=$ROOT/assets/tls-certificate.crt \
+        -Dvalkey_tls_keyfile=$ROOT/assets/tls-certificate.key"
 else
     echo 'Database not found!'
     exit 1
@@ -116,13 +115,13 @@ EOF
             enable-debug-command local
 EOF
         fi
-        $DB_ENGINE-server "$TMP/db-master$MASTER_INDEX.conf"
+        valkey-server "$TMP/db-master$MASTER_INDEX.conf"
         CONTEXT="\
             $CONTEXT \
-            -Dredis_master${MASTER_INDEX}_ip=$MASTER_IP \
-            -Dredis_master${MASTER_INDEX}_port=$MASTER_PORT \
-            -Dredis_master${MASTER_INDEX}_tls_port=$MASTER_TLS_PORT \
-            -Dredis_master${MASTER_INDEX}_socket=$TMP/db-master$MASTER_INDEX.sock"
+            -Dvalkey_master${MASTER_INDEX}_ip=$MASTER_IP \
+            -Dvalkey_master${MASTER_INDEX}_port=$MASTER_PORT \
+            -Dvalkey_master${MASTER_INDEX}_tls_port=$MASTER_TLS_PORT \
+            -Dvalkey_master${MASTER_INDEX}_socket=$TMP/db-master$MASTER_INDEX.sock"
 
         for SLAVE_INDEX in $(seq 1 $DB_STANDALONE_SLAVE_SERVERS); do
             [[ $IPV6 = 1 ]] && SLAVE_IP=::1 || SLAVE_IP=127.0.$MASTER_INDEX.$SLAVE_INDEX
@@ -145,13 +144,13 @@ EOF
                 tls-ca-cert-file $ROOT/assets/tls-ca-certificate.crt
 EOF
             fi
-            $DB_ENGINE-server "$TMP/db-slave${MASTER_INDEX}_$SLAVE_INDEX.conf"
+            valkey-server "$TMP/db-slave${MASTER_INDEX}_$SLAVE_INDEX.conf"
             CONTEXT="\
                 $CONTEXT \
-                -Dredis_slave${MASTER_INDEX}_${SLAVE_INDEX}_ip=$SLAVE_IP \
-                -Dredis_slave${MASTER_INDEX}_${SLAVE_INDEX}_port=$SLAVE_PORT \
-                -Dredis_slave${MASTER_INDEX}_${SLAVE_INDEX}_tls_port=$SLAVE_TLS_PORT \
-                -Dredis_slave${MASTER_INDEX}_${SLAVE_INDEX}_socket=$TMP/db-slave${MASTER_INDEX}_$SLAVE_INDEX.sock"
+                -Dvalkey_slave${MASTER_INDEX}_${SLAVE_INDEX}_ip=$SLAVE_IP \
+                -Dvalkey_slave${MASTER_INDEX}_${SLAVE_INDEX}_port=$SLAVE_PORT \
+                -Dvalkey_slave${MASTER_INDEX}_${SLAVE_INDEX}_tls_port=$SLAVE_TLS_PORT \
+                -Dvalkey_slave${MASTER_INDEX}_${SLAVE_INDEX}_socket=$TMP/db-slave${MASTER_INDEX}_$SLAVE_INDEX.sock"
         done
 
         for SENTINEL_INDEX in $(seq 1 $DB_STANDALONE_SENTINEL_SERVERS); do
@@ -184,12 +183,12 @@ EOF
             tls-ca-cert-file $ROOT/assets/tls-ca-certificate.crt
 EOF
         fi
-        $DB_ENGINE-server "$TMP/db-sentinel$INDEX.conf" --sentinel
+        valkey-server "$TMP/db-sentinel$INDEX.conf" --sentinel
         CONTEXT="\
             $CONTEXT \
-            -Dredis_sentinel${INDEX}_ip=$SENTINEL_IP \
-            -Dredis_sentinel${INDEX}_port=$SENTINEL_PORT \
-            -Dredis_sentinel${INDEX}_tls_port=$SENTINEL_TLS_PORT"
+            -Dvalkey_sentinel${INDEX}_ip=$SENTINEL_IP \
+            -Dvalkey_sentinel${INDEX}_port=$SENTINEL_PORT \
+            -Dvalkey_sentinel${INDEX}_tls_port=$SENTINEL_TLS_PORT"
     done
 
 ##
@@ -224,46 +223,46 @@ EOF
             tls-ca-cert-file $ROOT/assets/tls-ca-certificate.crt
 EOF
         fi
-        $DB_ENGINE-server "$TMP/db-server$INDEX.conf"
+        valkey-server "$TMP/db-server$INDEX.conf"
         CONTEXT="\
             $CONTEXT \
-            -Dredis_server${INDEX}_ip=$IP \
-            -Dredis_server${INDEX}_port=$PORT \
-            -Dredis_server${INDEX}_tls_port=$TLS_PORT \
-            -Dredis_server${INDEX}_socket=$TMP/db-server$INDEX.sock"
+            -Dvalkey_server${INDEX}_ip=$IP \
+            -Dvalkey_server${INDEX}_port=$PORT \
+            -Dvalkey_server${INDEX}_tls_port=$TLS_PORT \
+            -Dvalkey_server${INDEX}_socket=$TMP/db-server$INDEX.sock"
         SERVERS="$SERVERS $IP:$PORT"
     done
 
     # Wait for all nodes to bootstrap and then set up the cluster.
     sleep 1
     if [ "$VERSION" -ge '5000000' ]; then
-        yes yes | $DB_ENGINE-cli --cluster create $SERVERS --cluster-replicas $DB_CLUSTER_REPLICAS > /dev/null
+        yes yes | valkey-cli --cluster create $SERVERS --cluster-replicas $DB_CLUSTER_REPLICAS > /dev/null
     else
-        yes yes | redis-trib.rb create --replicas $DB_CLUSTER_REPLICAS $SERVERS > /dev/null
+        yes yes | valkey-trib.rb create --replicas $DB_CLUSTER_REPLICAS $SERVERS > /dev/null
     fi
 
     # Wait for cluster formation in a rudementary way.
     [[ $IPV6 = 1 ]] && HOST=::1 || HOST=127.0.0.1
     [[ $IPV6 = 1 ]] && PATTERN=::1 || PATTERN=127[.]0[.]0[.]
-    while [ $($DB_ENGINE-cli -h $HOST -p $((DB_CLUSTER_START_PORT+1)) CLUSTER SLOTS | grep "$PATTERN" | wc -l) -lt $DB_CLUSTER_SERVERS ]; do
+    while [ $(valkey-cli -h $HOST -p $((DB_CLUSTER_START_PORT+1)) CLUSTER SLOTS | grep "$PATTERN" | wc -l) -lt $DB_CLUSTER_SERVERS ]; do
         sleep 1
     done
     sleep 1
 
     # Add to context:
     #   - All master nodes' addresses ordered by the slots they handle
-    #     (redis_master1, redis_master2, ...).
-    #   - An example key for each of those master nodes (redis_key_in_master1,
-    #   redis_key_in_master2, ...).
+    #     (valkey_master1, valkey_master2, ...).
+    #   - An example key for each of those master nodes (valkey_key_in_master1,
+    #   valkey_key_in_master2, ...).
     INDEX=1
     while read LINE; do
         CONTEXT="\
             $CONTEXT \
-            -Dredis_master${INDEX}_ip=$(echo $LINE | cut -f 2 -d ' ' | cut -f 1 -d '@' | rev | cut -f 2- -d ':' | rev) \
-            -Dredis_master${INDEX}_port=$(echo $LINE | cut -f 2 -d ' ' | cut -f 1 -d '@' | rev | cut -f 1 -d ':' | rev) \
-            -Dredis_key_in_master${INDEX}=$(grep "^$(echo $LINE | cut -f 9 -d ' ' | cut -f 1 -d '-'): " $ROOT/assets/hashslot-keys.txt | cut -f 2 -d ' ')"
+            -Dvalkey_master${INDEX}_ip=$(echo $LINE | cut -f 2 -d ' ' | cut -f 1 -d '@' | rev | cut -f 2- -d ':' | rev) \
+            -Dvalkey_master${INDEX}_port=$(echo $LINE | cut -f 2 -d ' ' | cut -f 1 -d '@' | rev | cut -f 1 -d ':' | rev) \
+            -Dvalkey_key_in_master${INDEX}=$(grep "^$(echo $LINE | cut -f 9 -d ' ' | cut -f 1 -d '-'): " $ROOT/assets/hashslot-keys.txt | cut -f 2 -d ' ')"
         INDEX=$(( INDEX + 1 ))
-    done <<< "$($DB_ENGINE-cli -h $HOST -p $((DB_CLUSTER_START_PORT+1)) CLUSTER NODES | grep master | sort -k 9 -n)"
+    done <<< "$(valkey-cli -h $HOST -p $((DB_CLUSTER_START_PORT+1)) CLUSTER NODES | grep master | sort -k 9 -n)"
 fi
 
 ##

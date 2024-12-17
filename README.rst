@@ -1,31 +1,31 @@
 
-.. image:: https://github.com/carlosabalde/libvmod-redis/workflows/CI/badge.svg?branch=6.0
+.. image:: https://github.com/carlosabalde/libvmod-valkey/workflows/CI/badge.svg?branch=6.0
    :alt: GitHub Actions CI badge
-   :target: https://github.com/carlosabalde/libvmod-redis/actions
-.. image:: https://codecov.io/gh/carlosabalde/libvmod-redis/branch/6.0/graph/badge.svg
+   :target: https://github.com/carlosabalde/libvmod-valkey/actions
+.. image:: https://codecov.io/gh/carlosabalde/libvmod-valkey/branch/6.0/graph/badge.svg
    :alt: Codecov badge
-   :target: https://codecov.io/gh/carlosabalde/libvmod-redis
+   :target: https://codecov.io/gh/carlosabalde/libvmod-valkey
 
-VMOD using the `synchronous hiredis library API <https://github.com/redis/hiredis>`_ to access Redis servers from VCL.
+VMOD using the `synchronous libvalkey library API <https://github.com/valkey-io/libvalkey>`_ to access Valkey servers from VCL. Based on the `libvmod-redis VMOD <https://github.com/carlosabalde/libvmod-redis>`_ project.
 
 Highlights:
 
 * **Full support for execution of LUA scripts** (i.e. ``EVAL`` command), including optimistic automatic execution of ``EVALSHA`` commands.
-* **All Redis reply data types are supported**, including partial support to access to components of simple (i.e. not nested) array replies.
-* **Redis pipelines are not (and won't be) supported**. LUA scripting, which is fully supported by the VMOD, it's a much more flexible alternative to pipelines for atomic execution and minimizing latency. Pipelines are hard to use and error prone, specially when using the ``WATCH`` command.
-* **Support for classic Redis deployments** using multiple replicated Redis servers **and for clustered deployments based on Redis Cluster**.
-* **Support for multiple databases and multiple Redis connections**, local to each Varnish worker thread, or shared using one or more pools.
+* **All Valkey reply data types are supported**, including partial support to access to components of simple (i.e. not nested) array replies.
+* **Valkey pipelines are not (and won't be) supported**. LUA scripting, which is fully supported by the VMOD, it's a much more flexible alternative to pipelines for atomic execution and minimizing latency. Pipelines are hard to use and error prone, specially when using the ``WATCH`` command.
+* **Support for classic Valkey deployments** using multiple replicated Valkey servers **and for clustered deployments based on Valkey Cluster**.
+* **Support for multiple databases and multiple Valkey connections**, local to each Varnish worker thread, or shared using one or more pools.
 * **Support for smart command execution**, selecting the destination server according with the preferred role (i.e. master or slave) and with distance and healthiness metrics collected during execution.
-* **Support for Redis Sentinel**, allowing automatic discovery of sick / healthy servers and changes in their roles.
+* **Support for Valkey Sentinel**, allowing automatic discovery of sick / healthy servers and changes in their roles.
 
-Please, check out `the project wiki <https://github.com/carlosabalde/libvmod-redis/wiki>`_ for some extra information and useful links.
+Please, check out `the project wiki <https://github.com/carlosabalde/libvmod-valkey/wiki>`_ for some extra information and useful links.
 
 Looking for official support for this VMOD? Please, contact `Allenta Consulting <https://www.allenta.com>`_, a `Varnish Software Premium partner <https://www.varnish-software.com/partner/allenta-consulting>`_.
 
 SYNOPSIS
 ========
 
-import redis;
+import valkey;
 
 ::
 
@@ -143,7 +143,7 @@ import redis;
     Method STRING .stats(
         ENUM { json, prometheus } format="json",
         BOOL stream=0,
-        STRING prometheus_name_prefix="vmod_redis_",
+        STRING prometheus_name_prefix="vmod_valkey_",
         BOOL prometheus_default_labels=1,
         STRING prometheus_extra_labels="")
     Method INT .counter(STRING name)
@@ -157,9 +157,9 @@ Single server
 ::
 
     sub vcl_init {
-        # VMOD configuration: simple case, keeping up to one Redis connection
+        # VMOD configuration: simple case, keeping up to one Valkey connection
         # per Varnish worker thread.
-        new db = redis.db(
+        new db = valkey.db(
             location="192.168.1.100:6379",
             type=master,
             connection_timeout=500,
@@ -205,15 +205,15 @@ Multiple servers
 
     sub vcl_init {
         # VMOD configuration: master-slave replication, keeping up to two
-        # Redis connections per Varnish worker thread (up to one to the master
+        # Valkey connections per Varnish worker thread (up to one to the master
         # server & up to one to the closest slave server).
-        redis.subnets(
+        valkey.subnets(
             masks={"
                 0 192.168.1.102/32,
                 1 192.168.1.103/32,
                 2 0.0.0.0/32
             "});
-        new db = redis.db(
+        new db = valkey.db(
             location="192.168.1.100:6379",
             type=master,
             connection_timeout=500,
@@ -244,11 +244,11 @@ Clustered setup
 ::
 
     sub vcl_init {
-        # VMOD configuration: clustered setup, keeping up to 100 Redis
+        # VMOD configuration: clustered setup, keeping up to 100 Valkey
         # connections per server, all shared between all Varnish worker threads.
         # Two initial cluster servers are provided; remaining servers are
         # automatically discovered.
-        new db = redis.db(
+        new db = valkey.db(
             location="192.168.1.100:6379",
             type=cluster,
             connection_timeout=500,
@@ -281,7 +281,7 @@ The source tree is based on autotools to configure the building, and does also h
 
 Dependencies:
 
-* `hiredis <https://github.com/redis/hiredis>`_ - minimalistic C Redis client library.
+* `libvalkey <https://github.com/valkey-io/libvalkey>`_ - Valkey client library in C.
 * `libev <http://software.schmorp.de/pkg/libev.html>`_ - full-featured and high-performance event loop.
 
 COPYRIGHT
@@ -294,7 +294,7 @@ Public domain implementation of the SHA-1 cryptographic hash function by Steve R
 * https://github.com/clibs/sha1/blob/master/sha1.c
 * https://github.com/clibs/sha1/blob/master/sha1.h
 
-BSD's implementation of the CRC-16 cryptographic hash function by Georges Menie & Salvatore Sanfilippo and embedded in this VMOD (required for the Redis Cluster slot calculation) has been borrowed from the `Redis project <https://redis.io>`_:
+BSD's implementation of the CRC-16 cryptographic hash function by Georges Menie & Salvatore Sanfilippo and embedded in this VMOD (required for the Valkey Cluster slot calculation) has been borrowed from the `Redis project <https://redis.io>`_:
 
 * http://download.redis.io/redis-stable/src/crc16.c
 
