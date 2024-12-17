@@ -6,23 +6,23 @@ server s1 {
 } -repeat 1 -start
 
 varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={"
-                1 ${redis_slave1_1_ip}/32,
-                0 ${redis_slave1_2_ip}/32
+                1 ${valkey_slave1_1_ip}/32,
+                0 ${valkey_slave1_2_ip}/32
             "});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={""},
             period=0,
             connection_timeout=500,
             command_timeout=0);
 
-        new db = redis.db(
-            location="${redis_master1_ip}:${redis_master1_port}",
+        new db = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_port}",
             type=master,
             connection_timeout=500,
             connection_ttl=0,
@@ -34,8 +34,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
             sickness_ttl=0,
             ignore_slaves=false,
             max_cluster_hops=0);
-        db.add_server("${redis_slave1_1_ip}:${redis_slave1_1_port}", slave);
-        db.add_server("${redis_slave1_2_ip}:${redis_slave1_2_port}", slave);
+        db.add_server("${valkey_slave1_1_ip}:${valkey_slave1_1_port}", slave);
+        db.add_server("${valkey_slave1_2_ip}:${valkey_slave1_2_port}", slave);
     }
 
     sub vcl_deliver {
@@ -77,10 +77,10 @@ client c1 {
     rxresp
 
     expect resp.http.Reply-1 == "master"
-    expect resp.http.Reply-2 == "${redis_master1_port}"
+    expect resp.http.Reply-2 == "${valkey_master1_port}"
 
     expect resp.http.Reply-3 == "slave"
-    expect resp.http.Reply-4 == "${redis_slave1_2_port}"
+    expect resp.http.Reply-4 == "${valkey_slave1_2_port}"
 
     expect resp.http.db-servers-total == "3"
     expect resp.http.db-connections-total == "2"

@@ -1,9 +1,9 @@
 AC_PREREQ([2.68])
-AC_INIT([libvmod-redis], [20.0], [], [vmod-redis])
+AC_INIT([libvmod-valkey], [2.0], [], [vmod-valkey])
 AC_COPYRIGHT([Copyright (c) Carlos Abalde <carlos.abalde@gmail.com>])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
-AC_CONFIG_SRCDIR(src/vmod_redis.vcc)
+AC_CONFIG_SRCDIR(src/vmod_valkey.vcc)
 AC_CONFIG_HEADER([config.h])
 
 AC_GNU_SOURCE
@@ -20,7 +20,7 @@ AX_CODE_COVERAGE
 AX_COMPILER_FLAGS_CFLAGS
 AX_PTHREAD(,[AC_MSG_ERROR([Could not configure pthreads support])])
 
-LIBS="$PTHREAD_LIBS $LIBS -lhiredis -lev"
+LIBS="$PTHREAD_LIBS $LIBS -lvalkey -lev"
 CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
 CC="$PTHREAD_CC"
 
@@ -36,7 +36,7 @@ AC_ARG_WITH([rst2man],
 m4_ifndef([VARNISH_PREREQ], AC_MSG_ERROR([Need varnish.m4 -- see README.rst]))
 
 VARNISH_PREREQ([7.6], [7.7])
-VARNISH_VMODS([redis])
+VARNISH_VMODS([valkey])
 
 VMOD_TESTS="$(cd $srcdir/src && echo tests/*.vtc)"
 AC_SUBST(VMOD_TESTS)
@@ -45,10 +45,10 @@ PKG_CHECK_VAR([LIBVARNISHAPI_LIBDIR], [varnishapi], [libdir])
 AC_SUBST([VARNISH_LIBRARY_PATH],
 	[$LIBVARNISHAPI_LIBDIR:$LIBVARNISHAPI_LIBDIR/varnish])
 
-# Check for libhiredis.
+# Check for libvalkey.
 AC_CHECK_LIB(
-	hiredis, redisCommand, [],
-	[AC_MSG_ERROR([libvmod-redis requires libhiredis.])])
+	valkey, valkeyCommand, [],
+	[AC_MSG_ERROR([libvmod-valkey requires libvalkey.])])
 
 # Check for libev3 (ev_loop) / libev4 (ev_run).
 # -DEV_COMPAT3=1 used during build.
@@ -56,7 +56,7 @@ AC_CHECK_LIB(
 	ev, ev_loop, [],
 	[AC_CHECK_LIB(
 		ev, ev_run, [],
-		[AC_MSG_ERROR([libvmod-redis requires libev.])])])
+		[AC_MSG_ERROR([libvmod-valkey requires libev.])])])
 
 # Check for TLS support: --enable-tls / --disable-tls
 AC_ARG_ENABLE(
@@ -78,15 +78,15 @@ if test "x$enable_tls" = xyes; then
 
 	AC_CHECK_LIB(
 		crypto, CRYPTO_new_ex_data, [],
-		[AC_MSG_ERROR([libvmod-redis requires libcrypto. Try --disable-tls.])])
+		[AC_MSG_ERROR([libvmod-valkey requires libcrypto. Try --disable-tls.])])
 
 	AC_CHECK_LIB(
 		ssl, SSL_CTX_new, [],
-		[AC_MSG_ERROR([libvmod-redis requires libssl. Try --disable-tls.])])
+		[AC_MSG_ERROR([libvmod-valkey requires libssl. Try --disable-tls.])])
 
 	AC_CHECK_LIB(
-		hiredis_ssl, redisInitiateSSL, [],
-		[AC_MSG_ERROR([libvmod-redis requires libhiredis_ssl. Try --disable-tls.])])
+		valkey_tls, valkeyInitiateTLS, [],
+		[AC_MSG_ERROR([libvmod-valkey requires libvalkey_tls. Try --disable-tls.])])
 
     AC_CHECK_LIB(
         varnish-sslhelper, VSSLH_status, [], [])

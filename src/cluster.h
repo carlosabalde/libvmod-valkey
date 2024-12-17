@@ -1,15 +1,15 @@
 #ifndef CLUSTER_H_INCLUDED
 #define CLUSTER_H_INCLUDED
 
-#include <hiredis/hiredis.h>
+#include <valkey/valkey.h>
 
 #include "core.h"
 
 void discover_cluster_slots(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, redis_server_t *server);
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, valkey_server_t *server);
 
-redisReply *cluster_execute(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, task_state_t *state,
+valkeyReply *cluster_execute(
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, task_state_t *state,
     struct timeval timeout, unsigned max_retries, unsigned argc, const char *argv[],
     unsigned *retries, unsigned master);
 

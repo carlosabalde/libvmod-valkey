@@ -1,4 +1,4 @@
-Source: libvmod-redis
+Source: libvmod-dvalkey
 Section: web
 Priority: extra
 Maintainer: Carlos Abalde <carlos.abalde@gmail.com>
@@ -8,11 +8,11 @@ Build-Depends: debhelper (>= 7),
  python-docutils | python3-docutils,
  varnish (>= 7.6.0),
  libvarnishapi-dev (>= 7.6.0),
- libhiredis-dev (>= 0.11.0),
+ libvalkey-dev (>= 0.11.0),
  libev-dev (>= 4.15)
 Standards-Version: 3.8.1
 
-Package: libvmod-redis
+Package: libvmod-dvalkey
 Architecture: any
-Depends: varnish (>= 7.6.0), libhiredis0.10 (>= 0.11.0) | libhiredis0.13 (>= 0.13.3), libev4 (>= 4.15), ${shlibs:Depends}, ${misc:Depends}, ${Varnish:ABI}
-Description: Redis VMOD for Varnish
+Depends: varnish (>= 7.6.0), libvalkey (>= 0.1.0), libev4 (>= 4.15), ${shlibs:Depends}, ${misc:Depends}, ${Varnish:ABI}
+Description: Valkey VMOD for Varnish

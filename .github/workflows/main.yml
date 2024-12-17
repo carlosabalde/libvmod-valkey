@@ -10,9 +10,6 @@ jobs:
 
     strategy:
       matrix:
-        db_engine:
-          - redis
-          - valkey
         cc:
           - gcc
           - clang
@@ -22,8 +19,7 @@ jobs:
         configure_flags:
           - ''
         include:
-          - db_engine: redis
-            cc: gcc
+          - cc: gcc
             make_target: lcov
             configure_flags: --enable-code-coverage
 
@@ -50,23 +46,13 @@ jobs:
           sudo ldconfig
           popd
 
-      - name: Install hiredis
+      - name: Install libvalkey
         run: |
-          wget --no-check-certificate https://github.com/redis/hiredis/archive/v1.2.0.zip -O hiredis-1.2.0.zip
-          unzip hiredis-*.zip
-          pushd hiredis-*/
-          make USE_SSL=1
-          sudo make USE_SSL=1 PREFIX='/usr/local' install
-          sudo ldconfig
-          popd
-
-      - name: Install Redis
-        run: |
-          wget --no-check-certificate http://download.redis.io/releases/redis-7.4.1.tar.gz
-          tar zxvf redis-*.tar.gz
-          pushd redis-*/
-          make BUILD_TLS=yes
-          sudo make BUILD_TLS=yes PREFIX='/usr/local' install
+          wget --no-check-certificate https://github.com/valkey-io/libvalkey/archive/c370ca99f22ef7cc6ad83aaaf287020090327a44.zip -O libvalkey-c370ca99f22ef7cc6ad83aaaf287020090327a44.zip
+          unzip libvalkey-*.zip
+          pushd libvalkey-*/
+          make USE_TLS=1
+          sudo make USE_TLS=1 PREFIX='/usr/local' install
           sudo ldconfig
           popd
 
@@ -85,12 +71,12 @@ jobs:
           ./autogen.sh
           CC='${{ matrix.cc }}' ./configure --prefix=/usr ${{ matrix.configure_flags }}
           make -j4
-          DB_ENGINE='${{ matrix.db_engine }}' make ${{ matrix.make_target }} -j1
+          make ${{ matrix.make_target }} -j1
 
       - name: Push code coverage
         if: ${{ matrix.make_target == 'lcov' }}
         run: |
-          cp libvmod-redis-*-coverage.info codecov.info
+          cp libvmod-valkey-*-coverage.info codecov.info
           bash <(curl -s https://codecov.io/bash) -X gcov -X coveragepy -t ${{ secrets.CODECOV_TOKEN }}
 
       - name: Show test report
