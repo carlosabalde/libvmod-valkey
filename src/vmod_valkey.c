@@ -521,20 +521,20 @@ vmod_db__init(
 
 #ifdef TLS_ENABLED
         // Create Valkey TLS context.
-        valkeyTLSContext *tls_ssl_ctx = NULL;
+        valkeyTLSContext *tls_ctx = NULL;
         if (tls) {
-            valkeyTLSContextError ssl_error;
-            tls_ssl_ctx = valkeyCreateTLSContext(
+            valkeyTLSContextError tls_error;
+            tls_ctx = valkeyCreateTLSContext(
                 strlen(tls_cafile) > 0 ? tls_cafile : NULL,
                 strlen(tls_capath) > 0 ? tls_capath : NULL,
                 strlen(tls_certfile) > 0 ? tls_certfile : NULL,
                 strlen(tls_keyfile) > 0 ? tls_keyfile : NULL,
                 strlen(tls_sni) > 0 ? tls_sni : NULL,
-                &ssl_error);
-            if (tls_ssl_ctx == NULL) {
+                &tls_error);
+            if (tls_ctx == NULL) {
                 VALKEY_LOG_ERROR(ctx,
                     "Failed to create SSL context: %s",
-                    valkeyTLSContextGetError(ssl_error));
+                    valkeyTLSContextGetError(tls_error));
                 return;
             }
         }
@@ -546,7 +546,7 @@ vmod_db__init(
             command_timeout_tv, max_command_retries, shared_connections, max_connections,
             parse_protocol(protocol),
 #ifdef TLS_ENABLED
-            tls_ssl_ctx,
+            tls_ctx,
 #endif
             user, password, sickness_ttl, ignore_slaves, clustered, max_cluster_hops);
 
