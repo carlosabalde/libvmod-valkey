@@ -1,5 +1,5 @@
 
-.. image:: https://github.com/carlosabalde/libvmod-valkey/workflows/CI/badge.svg?branch=6.0
+.. image:: https://github.com/carlosabalde/libvmod-valkey/actions/workflows/main.yml/badge.svg?branch=6.0
    :alt: GitHub Actions CI badge
    :target: https://github.com/carlosabalde/libvmod-valkey/actions
 .. image:: https://codecov.io/gh/carlosabalde/libvmod-valkey/branch/6.0/graph/badge.svg
