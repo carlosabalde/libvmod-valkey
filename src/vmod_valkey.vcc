@@ -5,13 +5,13 @@
 # LICENSE file.
 #
 
-$Module redis 3 'Redis VMOD'
+$Module valkey 3 'Valkey VMOD'
 $ABI strict
 
 DESCRIPTION
 ===========
 
-VMOD using the synchronous hiredis library API to access Redis servers from VCL.
+VMOD using the synchronous libvalkey library API to access Valkey servers from VCL.
 
 $Event event_function
 
@@ -23,9 +23,9 @@ Arguments
         Comma-delimited list of weights + subnet masks used to select among
         servers associated to a database instance when executing commands.
         Order is relevant. Only IPv4 addresses are supported. If not provided,
-        value in the VMOD_REDIS_SUBNETS environment variable will be used.
+        value in the VMOD_VALKEY_SUBNETS environment variable will be used.
 
-        This is useful in setups using Redis instances deployed across multiple
+        This is useful in setups using Valkey instances deployed across multiple
         data centers or availability zones.
 Description
     Using this function is not mandatory. If used, it must be called during
@@ -48,32 +48,32 @@ $Function VOID sentinels(PRIV_VCL,
 
 Arguments
     locations:
-        Comma-delimited list of Redis Sentinel servers. Only host (IP or DNS
+        Comma-delimited list of Valkey Sentinel servers. Only host (IP or DNS
         name) + port format is allowed. If not provided, value in the
-        VMOD_REDIS_SENTINELS environment variable will be used.
+        VMOD_VALKEY_SENTINELS environment variable will be used.
 
-        This is useful in setups using non-clustered Redis instances in order
+        This is useful in setups using non-clustered Valkey instances in order
         to (1) keep roles (i.e. master / slave) updated; and (2) decrease
         priority of unreachable servers when creating execution plans. This is
-        **not** designed for auto-discovery of Redis Servers.
+        **not** designed for auto-discovery of Valkey Servers.
 
-    period: how frequently (seconds) Redis Sentinel periodical checks are
+    period: how frequently (seconds) Valkey Sentinel periodical checks are
     executed (0 means disabling periodical checks). Beware (1) proactive checks
     are also executed anytime the VCL state is changed to warm; and (2) Sentinel
     Pub/Sub events are listened and processed even when periodical checks are
     disabled.
 
     connection_timeout: connection timeout (milliseconds; 0 means no timeout)
-    to the Redis Sentinel servers.
+    to the Valkey Sentinel servers.
 
     command_timeout: command timeout (milliseconds; 0 means no timeout) when
-    executing Redis Sentinel commands.
+    executing Valkey Sentinel commands.
 
-    protocol: protocol to be used when talking to Redis Sentinel servers. Beware
-    switching from ``RESP2`` to ``RESP3`` is only possible since Redis 6.0 and
-    it uses an additional ``HELLO`` command when creating new Redis Sentinel
+    protocol: protocol to be used when talking to Valkey Sentinel servers. Beware
+    switching from ``RESP2`` to ``RESP3`` is only possible since Valkey 6.0 and
+    it uses an additional ``HELLO`` command when creating new Valkey Sentinel
     connections. Be careful ``RESP3`` support is only available since
-    ``hiredis`` 0.15.0.
+    ``libvalkey`` 0.1.0.
 
     tsl: if enabled, TLS will be used when establishing connections.
 
@@ -95,8 +95,8 @@ Arguments
     when establishing TLS connections.
 
     password: if not empty, requests for authentication using the ``AUTH``
-    command will be submitted when creating new Redis Sentinel connections.
-    This password will be used for all Redis Sentinel servers.
+    command will be submitted when creating new Valkey Sentinel connections.
+    This password will be used for all Valkey Sentinel servers.
 Description
     Using this function is not mandatory.
 
@@ -308,7 +308,7 @@ Description
 $Function STRING stats(PRIV_VCL, PRIV_TASK,
     ENUM { json, prometheus } format="json",
     BOOL stream=0,
-    STRING prometheus_name_prefix="vmod_redis_",
+    STRING prometheus_name_prefix="vmod_valkey_",
     BOOL prometheus_default_labels=1,
     STRING prometheus_extra_labels="",
     STRING db="")
@@ -344,65 +344,65 @@ $Object db(PRIV_VCL,
     INT max_cluster_hops=32)
 
 Arguments
-    location: Redis connection string. Both host (IP or DNS name) + port and
-    UNIX sockets are supported. Only the IP + port format is allowed when Redis
+    location: Valkey connection string. Both host (IP or DNS name) + port and
+    UNIX sockets are supported. Only the IP + port format is allowed when Valkey
     Cluster support is enabled. **Do not use DNS names in combination with
-    ``redis.subnets()`` or ``redis.sentinels()``**.
+    ``valkey.subnets()`` or ``valkey.sentinels()``**.
 
-    type: type of the Redis server referenced by ``location``:
+    type: type of the Valkey server referenced by ``location``:
 
     - The ``auto`` value  enables automatic discovery of the current role
       of the server on bootstrap time using the ``ROLE`` command.
 
-    - The ``cluster`` value enables Redis Cluster support, automatically
+    - The ``cluster`` value enables Valkey Cluster support, automatically
       discovering other servers in the cluster and their roles on demand
       using the ``CLUSTER SLOTS`` command.
 
     connection_timeout: connection timeout (milliseconds; 0 means no timeout)
-    to the Redis server.
+    to the Valkey server.
 
-    connection_ttl: TTL (seconds) of Redis connections (0 means no TTL). Once
+    connection_ttl: TTL (seconds) of Valkey connections (0 means no TTL). Once
     the TTL of a connection is consumed, the module transparently reestablishes
-    it. See "Client timeouts" in http://redis.io/topics/clients for extra
+    it. See "Client timeouts" in http://valkey.io/topics/clients for extra
     information.
 
     command_timeout: command timeout (milliseconds; 0 means no timeout) when
-    executing a Redis command. It can be overridden during command execution
+    executing a Valkey command. It can be overridden during command execution
     with ``.timeout()``.
 
     max_command_retries: number of retries to be executed after a failed command
     execution. It can be overridden during command execution with
     ``.retries()``.
 
-    shared_connections: if enabled, Redis connections are not local to Varnish
+    shared_connections: if enabled, Valkey connections are not local to Varnish
     worker threads, but shared by all threads using one or more pools.
 
     max_connections:
         When ``shared_connections`` is enabled, the VMOD creates one pool of
-        Redis connections per location and database instance. This option sets
+        Valkey connections per location and database instance. This option sets
         the maximum number of connections in each pool. All Varnish worker
         threads using the same database instance will share connections in these
         pools. Pools are not shared between database instances.
 
-        Note that when Redis Cluster support is enabled for a database, each
+        Note that when Valkey Cluster support is enabled for a database, each
         server is the cluster is internally labeled by the VMOD with its
         location (IP + port).
 
-        When ``shared_connections`` is disabled, Redis connections are local to
-        each Varnish worker thread. This option sets the maximum number of Redis
+        When ``shared_connections`` is disabled, Valkey connections are local to
+        each Varnish worker thread. This option sets the maximum number of Valkey
         connections per Varnish worker thread. Each thread keeps up to one
         connection per location and database instance. If more than one (database,
         location) pair is available, incrementing this limit allows recycling of
-        Redis connections.
+        Valkey connections.
 
         WARNING: when creating multiple database instances, always use the same
         value in all instances using private connections. Otherwise you may
         experience inconsistent behavior.
 
-    protocol: protocol to be used when talking to Redis Server servers. Beware
-    switching from ``RESP2`` to ``RESP3`` is only possible since Redis 6.0 and
+    protocol: protocol to be used when talking to Valkey Server servers. Beware
+    switching from ``RESP2`` to ``RESP3`` is only possible since Valkey 6.0 and
     it affects to type conversion rules. Be careful ``RESP3`` support is only
-    available since ``hiredis`` 0.15.0.
+    available since ``libvalkey`` 0.1.0.
 
     tsl: if enabled, TLS will be used when establishing connections.
 
@@ -425,19 +425,19 @@ Arguments
 
     user: if not empty and a ``password`` is provided, requests for
     authentication using the ``AUTH`` or ``HELLO`` command will include both the
-    user name and its password. That enables usage of the Redis ACL system,
-    available since Redis 6.0.
+    user name and its password. That enables usage of the Valkey ACL system,
+    available since Valkey 6.0.
 
     password: if not empty, requests for authentication using the ``AUTH`` or
-    ``HELLO`` command will be submitted when creating new Redis connections.
-    This password will be used for all Redis servers, including discovered
-    servers when Redis Cluster support is enabled.
+    ``HELLO`` command will be submitted when creating new Valkey connections.
+    This password will be used for all Valkey servers, including discovered
+    servers when Valkey Cluster support is enabled.
 
     sickness_ttl: TTL (seconds) of the sickness flag (0 means no sickness flags)
-    associated to a Redis server. Once a server is flagged as sick and while the
+    associated to a Valkey server. Once a server is flagged as sick and while the
     flag is not expired the module will lazily drop existing connections to that
     server and it will try to avoid it as much as possible when creating
-    execution plans. This TTL is overridden when Redis Sentinel servers are
+    execution plans. This TTL is overridden when Valkey Sentinel servers are
     configured and some Sentinel discovers an unreachable server.
 
     ignore_slaves: if enabled, slave servers are not considered when executing
@@ -445,7 +445,7 @@ Arguments
     ``master == true`` when using the ``.execute()`` method.
 
     max_cluster_hops: maximum number of redirections (0 means no limit) when
-    executing a command and Redis Cluster support has been enabled.
+    executing a command and Valkey Cluster support has been enabled.
 Description
     Creates a new database instance.
 
@@ -455,23 +455,23 @@ $Method VOID .add_server(
     ENUM { master, slave, auto, cluster } type)
 
 Arguments
-    location: Redis connection string. Both host (IP or DNS name) + port and
-    UNIX sockets are supported. If Redis Cluster support has been enabled only
+    location: Valkey connection string. Both host (IP or DNS name) + port and
+    UNIX sockets are supported. If Valkey Cluster support has been enabled only
     the IP + port format is allowed. **Do not use DNS names in combination with
-    ``redis.subnets()`` or ``redis.sentinels()``**.
+    ``valkey.subnets()`` or ``valkey.sentinels()``**.
 
-    type: type of the Redis server referenced by ``location``:
+    type: type of the Valkey server referenced by ``location``:
 
     - The ``auto`` value  enables automatic discovery of the current role
       of the server on bootstrap time using the ``ROLE`` command.
 
-    - If Redis Cluster support has been enabled ``cluster`` is the only
+    - If Valkey Cluster support has been enabled ``cluster`` is the only
       allowed value.
 
 Description
-    Adds an extra Redis server.
+    Adds an extra Valkey server.
 
-    If Redis Cluster support has been enabled other servers in the cluster and
+    If Valkey Cluster support has been enabled other servers in the cluster and
     their roles are automatically discovered by the VMOD using the
     ``CLUSTER SLOTS`` command. In any case, knowing more cluster servers during
     startup increases the chances of discover the cluster topology if some server
@@ -480,21 +480,21 @@ Description
 $Method VOID .command(PRIV_TASK, STRING name)
 
 Arguments
-    name: name of the Redis command to be executed.
+    name: name of the Valkey command to be executed.
 Description
-    Enqueues a Redis command (only the name of the command) for further
+    Enqueues a Valkey command (only the name of the command) for further
     execution. Arguments should be enqueued separately calling one or more times
     to the ``.push()`` method.
 
     On execution time, ``EVAL`` commands are internally replace by ``EVALSHA``
-    commands, which fallback to the original ``EVAL`` command if the Redis
-    server returns a ``NOSCRIPT`` error (see http://redis.io/commands/eval).
+    commands, which fallback to the original ``EVAL`` command if the Valkey
+    server returns a ``NOSCRIPT`` error (see http://valkey.io/commands/eval).
 
 $Method VOID .timeout(PRIV_TASK, INT command_timeout)
 
 Arguments
     command_timeout: command timeout (milliseconds; 0 means no timeout) to be
-    used when executing a specific Redis command.
+    used when executing a specific Valkey command.
 Description
     Allows overriding the default command timeout provided when calling
     ``.db()``.
@@ -511,9 +511,9 @@ Description
 $Method VOID .push(PRIV_TASK, STRING arg)
 
 Arguments
-    arg: argument of a previously enqueued Redis command.
+    arg: argument of a previously enqueued Valkey command.
 Description
-    Provides an argument to a previously enqueued Redis command.
+    Provides an argument to a previously enqueued Valkey command.
 
 $Method VOID .execute(PRIV_VCL, PRIV_TASK, BOOL master=1)
 
@@ -522,35 +522,35 @@ Arguments
 Return value
     VOID
 Description
-    Executes a previously enqueued Redis command.
+    Executes a previously enqueued Valkey command.
 
-    When more than one Redis server is available, the destination server
+    When more than one Valkey server is available, the destination server
     is selected according with ``master`` and with the list of weights +
-    subnet masks provided when calling ``redis.subnets()``.
+    subnet masks provided when calling ``valkey.subnets()``.
 
     WARNING: allowing execution of commands in slave servers (i.e. ``master ==
     false``) must be carefully used:
 
-    - When Redis Cluster support is disabled, sending a read-write command to
+    - When Valkey Cluster support is disabled, sending a read-write command to
       a read-only slave server will result in an error reply.
 
     - It's safe to send read-only LUA scripts using ``EVAL`` or ``EVALSHA``
-      commands to a read-only slave server when Redis Cluster support is
+      commands to a read-only slave server when Valkey Cluster support is
       disabled. Being a read-only slave server does not block writes in the
       script cache.
 
-    - When Redis Cluster support is enabled, sending a read-write command to
+    - When Valkey Cluster support is enabled, sending a read-write command to
       a slave server will result in a redirection to the right master server.
-      This kind of redirections trigger an internal rediscovery of the cluster
+      This kind of redirections trigger an internal valkeycovery of the cluster
       topology. The client side won't notice the redirection, but triggering
       such an expensive operation on every command is a **terrible idea**.
 
     - **It's not safe to send read-only LUA scripts using ``EVAL`` or ``EVALSHA``
-      commands to a slave server when Redis Cluster support is enabled**. Redis
+      commands to a slave server when Valkey Cluster support is enabled**. Valkey
       Cluster handles ``EVAL`` and ``EVALSHA1`` command as write operations that
       must be redirected to a master server. Therefore, this would result on a
-      rediscovery of the cluster topology on every command execution. The VMOD
-      internally forces ``master == true`` when Redis Cluster support is enabled
+      valkeycovery of the cluster topology on every command execution. The VMOD
+      internally forces ``master == true`` when Valkey Cluster support is enabled
       and ``EVAL`` or ``EVALSHA`` command are submitted in order to avoid this
       counterintuitive scenario.
 
@@ -592,62 +592,62 @@ Description
 $Method BOOL .replied(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command using ``.execute()`` returned
+    TRUE if a previously executed Valkey command using ``.execute()`` returned
     any reply. Not returning a reply usually means a failed connection, a
     connection timeout, etc.
 
 $Method BOOL .reply_is_error(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command using ``.execute()`` returned
+    TRUE if a previously executed Valkey command using ``.execute()`` returned
     an error reply.
 
 $Method BOOL .reply_is_nil(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command using ``.execute()`` returned
+    TRUE if a previously executed Valkey command using ``.execute()`` returned
     a nil reply.
 
 $Method BOOL .reply_is_status(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command using ``.execute()`` returned
+    TRUE if a previously executed Valkey command using ``.execute()`` returned
     a status reply.
 
 $Method BOOL .reply_is_integer(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command ``.execute()`` returned an
+    TRUE if a previously executed Valkey command ``.execute()`` returned an
     integer reply.
 
 $Method BOOL .reply_is_boolean(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command ``.execute()`` returned an
+    TRUE if a previously executed Valkey command ``.execute()`` returned an
     boolean reply.
 
 $Method BOOL .reply_is_double(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command ``.execute()`` returned an
+    TRUE if a previously executed Valkey command ``.execute()`` returned an
     double reply.
 
 $Method BOOL .reply_is_string(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command ``.execute()`` returned a
+    TRUE if a previously executed Valkey command ``.execute()`` returned a
     string or verbatim reply.
 
 $Method BOOL .reply_is_array(PRIV_TASK)
 
 Return value
-    TRUE if a previously executed Redis command using ``.execute()`` returned
+    TRUE if a previously executed Valkey command using ``.execute()`` returned
     an array, map or set reply.
 
 $Method STRING .get_reply(PRIV_TASK)
 
 Return value
-    A string representation of the reply of a previously executed Redis command
+    A string representation of the reply of a previously executed Valkey command
     using ``.execute()``.
 Description
     Do not use this function to access to array, map or set replies.
@@ -655,47 +655,47 @@ Description
 $Method STRING .get_error_reply(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     error reply, this function returns a string representation of that reply.
 
 $Method STRING .get_status_reply(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned a
+    If a previously executed Valkey command using ``.execute()`` returned a
     status reply, this function returns a string representation of that reply.
 
 $Method INT .get_integer_reply(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned
+    If a previously executed Valkey command using ``.execute()`` returned
     an integer reply, this function returns an integer representation of that
     reply.
 
 $Method BOOL .get_boolean_reply(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned
+    If a previously executed Valkey command using ``.execute()`` returned
     an boolean reply, this function returns an boolean representation of that
     reply.
 
 $Method REAL .get_double_reply(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned
+    If a previously executed Valkey command using ``.execute()`` returned
     an double reply, this function returns an double representation of that
     reply.
 
 $Method STRING .get_string_reply(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned a
+    If a previously executed Valkey command using ``.execute()`` returned a
     string or verbatim reply, this function returns a string representation of
     that reply.
 
 $Method INT .get_array_reply_length(PRIV_TASK)
 
 Return value
-    If a previously executed Redis command using ``.execute()`` returned
+    If a previously executed Valkey command using ``.execute()`` returned
     an array, map or set reply, this function returns the number of elements in
     that reply.
 
@@ -704,7 +704,7 @@ $Method BOOL .array_reply_is_error(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned
+    If a previously executed Valkey command using ``.execute()`` returned
     an array, map or set reply, this function returns TRUE if the nth element in
     that reply is an error reply (nested responses are not supported).
 
@@ -713,7 +713,7 @@ $Method BOOL .array_reply_is_nil(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is a nil reply (nested responses are not supported).
 
@@ -722,7 +722,7 @@ $Method BOOL .array_reply_is_status(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is a status reply (nested responses are not supported).
 
@@ -731,7 +731,7 @@ $Method BOOL .array_reply_is_integer(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is an integer reply (nested responses are not supported).
 
@@ -740,7 +740,7 @@ $Method BOOL .array_reply_is_boolean(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is an boolean reply (nested responses are not supported).
 
@@ -749,7 +749,7 @@ $Method BOOL .array_reply_is_double(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is an double reply (nested responses are not supported).
 
@@ -758,7 +758,7 @@ $Method BOOL .array_reply_is_string(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is a string or verbatim reply (nested responses are not
     supported).
@@ -768,7 +768,7 @@ $Method BOOL .array_reply_is_array(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns TRUE if the nth element in
     that reply is an array, map or set reply (nested responses are not
     supported).
@@ -778,21 +778,21 @@ $Method STRING .get_array_reply_value(PRIV_TASK, INT index)
 Arguments
     index: index in the array reply.
 Return value
-    If a previously executed Redis command using ``.execute()`` returned an
+    If a previously executed Valkey command using ``.execute()`` returned an
     array, map or set reply, this function returns a string representation of
     the nth element in that reply (nested responses are not supported).
 
 $Method VOID .free(PRIV_TASK)
 
 Description
-    Frees memory internally used by Redis commands an replies. It's recommended to
+    Frees memory internally used by Valkey commands an replies. It's recommended to
     use this function, but if not called this will be handled automatically during
     the next call to ``.command()`` using the same object.
 
 $Method STRING .stats(
     ENUM { json, prometheus } format="json",
     BOOL stream=0,
-    STRING prometheus_name_prefix="vmod_redis_",
+    STRING prometheus_name_prefix="vmod_valkey_",
     BOOL prometheus_default_labels=1,
     STRING prometheus_extra_labels="")
 

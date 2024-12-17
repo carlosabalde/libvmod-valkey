@@ -6,7 +6,7 @@
 #include <limits.h>
 #include <string.h>
 #include <pthread.h>
-#include <hiredis/hiredis.h>
+#include <valkey/valkey.h>
 
 #include "cache/cache.h"
 
@@ -20,14 +20,14 @@
 #define CLUSTER_DISCOVERY_COMMAND "CLUSTER SLOTS"
 
 static void unsafe_discover_slots(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, redis_server_t *server);
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, valkey_server_t *server);
 
 static int get_key_index(const char *command);
 static unsigned get_cluster_slot(const char *key);
 
 void
 discover_cluster_slots(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, redis_server_t *server)
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, valkey_server_t *server)
 {
     Lck_Lock(&config->mutex);
     Lck_Lock(&db->mutex);
@@ -36,14 +36,14 @@ discover_cluster_slots(
     Lck_Unlock(&config->mutex);
 }
 
-redisReply *
+valkeyReply *
 cluster_execute(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, task_state_t *state,
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, task_state_t *state,
     struct timeval timeout, unsigned max_retries, unsigned argc, const char *argv[],
     unsigned *retries, unsigned master)
 {
     // Initializations.
-    redisReply *result = NULL;
+    valkeyReply *result = NULL;
 
     // Can the command be executed in a clustered setup?
     int index = get_key_index(argv[0]);
@@ -53,7 +53,7 @@ cluster_execute(
         unsigned hops = db->cluster.max_hops > 0 ? db->cluster.max_hops : UINT_MAX;
         unsigned asking = 0;
         unsigned hop = 0;
-        redis_server_t *server = NULL;
+        valkey_server_t *server = NULL;
 
         // Execute command, retrying and following redirections up to
         // some limit.
@@ -62,7 +62,7 @@ cluster_execute(
             //   - server != NULL ==> only include 'server' in the execution plan.
             //   - !master ==> use READONLY + READWRITE when dealing with slaves.
             //   - unknown slot ==> random server selection.
-            result = redis_execute(
+            result = valkey_execute(
                 ctx, db, state, timeout, max_retries, argc, argv,
                 retries, server, asking, master, slot);
 
@@ -74,7 +74,7 @@ cluster_execute(
             // Check reply.
             if (result != NULL) {
                 // Is this a MOVED or ASK error reply?
-                if ((result->type == REDIS_REPLY_ERROR) &&
+                if ((result->type == VALKEY_REPLY_ERROR) &&
                     ((strncmp(result->str, "MOVED", 5) == 0) ||
                      (strncmp(result->str, "ASK", 3) == 0))) {
                     // Extract location (e.g. ASK 3999 127.0.0.1:6381).
@@ -92,8 +92,8 @@ cluster_execute(
                     Lck_Lock(&db->mutex);
 
                     // Add / fetch server.
-                    server = unsafe_add_redis_server(
-                        ctx, db, config, location, REDIS_SERVER_TBD_ROLE);
+                    server = unsafe_add_valkey_server(
+                        ctx, db, config, location, VALKEY_SERVER_TBD_ROLE);
                     AN(server);
 
                     // ASK vs. MOVED.
@@ -153,14 +153,14 @@ cluster_execute(
 
         // Too many redirections?
         if (hops == 0) {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Too many redirections while executing cluster command (command=%s, db=%s)",
                 argv[0], db->name);
         }
 
-    // Invalid Redis Cluster command.
+    // Invalid Valkey Cluster command.
     } else {
-        REDIS_LOG_ERROR(ctx,
+        VALKEY_LOG_ERROR(ctx,
             "Invalid cluster command (command=%s, db=%s)",
             argv[0], db->name);
     }
@@ -175,8 +175,8 @@ cluster_execute(
 
 static void
 unsafe_add_slot(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, unsigned start,
-    unsigned stop, char *host, int port, enum REDIS_SERVER_ROLE role)
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, unsigned start,
+    unsigned stop, char *host, int port, enum VALKEY_SERVER_ROLE role)
 {
     // Assertions.
     Lck_AssertHeld(&config->mutex);
@@ -185,7 +185,7 @@ unsafe_add_slot(
     // Add / update server.
     char location[256];
     snprintf(location, sizeof(location), "%s:%d", host, port);
-    redis_server_t *server = unsafe_add_redis_server(ctx, db, config, location, role);
+    valkey_server_t *server = unsafe_add_valkey_server(ctx, db, config, location, role);
     AN(server);
 
     // Register slots.
@@ -196,15 +196,15 @@ unsafe_add_slot(
 
 static unsigned
 unsafe_discover_slots_aux(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, redis_server_t *server)
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, valkey_server_t *server)
 {
     // Assertions.
     Lck_AssertHeld(&config->mutex);
     Lck_AssertHeld(&db->mutex);
-    assert(server->location.type == REDIS_SERVER_LOCATION_HOST_TYPE);
+    assert(server->location.type == VALKEY_SERVER_LOCATION_HOST_TYPE);
 
     // Log event.
-    REDIS_LOG_INFO(ctx,
+    VALKEY_LOG_INFO(ctx,
         "Discovery of cluster topology started (db=%s, server=%s)",
         db->name, server->location.raw);
 
@@ -212,15 +212,15 @@ unsafe_discover_slots_aux(
     unsigned done = 0;
 
     // Create context.
-    redisContext *rcontext;
+    valkeyContext *rcontext;
     if ((db->connection_timeout.tv_sec > 0) ||
         (db->connection_timeout.tv_usec > 0)) {
-        rcontext = redisConnectWithTimeout(
+        rcontext = valkeyConnectWithTimeout(
             server->location.parsed.address.host,
             server->location.parsed.address.port,
             db->connection_timeout);
     } else {
-        rcontext = redisConnect(
+        rcontext = valkeyConnect(
             server->location.parsed.address.host,
             server->location.parsed.address.port);
     }
@@ -228,7 +228,7 @@ unsafe_discover_slots_aux(
     // Check context.
     if ((rcontext != NULL) && (!rcontext->err)) {
         // Optionally setup TLS & submit AUTH / HELLO command.
-        REDIS_BLESS_CONTEXT(
+        VALKEY_BLESS_CONTEXT(
             ctx, rcontext, server->db,
             "Failed to initialize cluster discovery connection",
             "db=%s, server=%s",
@@ -237,26 +237,26 @@ unsafe_discover_slots_aux(
         // Do not continue if failed to initialize the connection.
         if (rcontext != NULL) {
             // Set command execution timeout.
-            int tr = redisSetTimeout(rcontext, db->command_timeout);
-            if (tr != REDIS_OK) {
-                REDIS_LOG_ERROR(ctx,
+            int tr = valkeySetTimeout(rcontext, db->command_timeout);
+            if (tr != VALKEY_OK) {
+                VALKEY_LOG_ERROR(ctx,
                     "Failed to set cluster discovery command execution timeout (error=%d, db=%s, server=%s)",
                     tr, server->db->name, server->location.raw);
             }
 
             // Send command.
-            redisReply *reply = redisCommand(rcontext, CLUSTER_DISCOVERY_COMMAND);
+            valkeyReply *reply = valkeyCommand(rcontext, CLUSTER_DISCOVERY_COMMAND);
 
             // Check reply.
             if ((!rcontext->err) &&
                 (reply != NULL) &&
-                (reply->type == REDIS_REPLY_ARRAY)) {
+                (reply->type == VALKEY_REPLY_ARRAY)) {
                 // Reset previous slots.
-                redis_server_t *iserver;
-                for (unsigned iweight = 0; iweight < NREDIS_SERVER_WEIGHTS; iweight++) {
-                    for (enum REDIS_SERVER_ROLE irole = 0; irole < NREDIS_SERVER_ROLES; irole++) {
+                valkey_server_t *iserver;
+                for (unsigned iweight = 0; iweight < NVALKEY_SERVER_WEIGHTS; iweight++) {
+                    for (enum VALKEY_SERVER_ROLE irole = 0; irole < NVALKEY_SERVER_ROLES; irole++) {
                         VTAILQ_FOREACH(iserver, &db->servers[iweight][irole], list) {
-                            for (int i = 0; i < NREDIS_CLUSTER_SLOTS; i++) {
+                            for (int i = 0; i < NVALKEY_CLUSTER_SLOTS; i++) {
                                 iserver->cluster.slots[i] = 0;
                             }
                         }
@@ -265,38 +265,38 @@ unsafe_discover_slots_aux(
 
                 // Extract slots.
                 for (int i = 0; i < reply->elements; i++) {
-                    if ((reply->element[i]->type == REDIS_REPLY_ARRAY) &&
+                    if ((reply->element[i]->type == VALKEY_REPLY_ARRAY) &&
                         (reply->element[i]->elements >= 3) &&
-                        (reply->element[i]->element[0]->type == REDIS_REPLY_INTEGER) &&
-                        (reply->element[i]->element[1]->type == REDIS_REPLY_INTEGER) &&
-                        (reply->element[i]->element[2]->type == REDIS_REPLY_ARRAY) &&
+                        (reply->element[i]->element[0]->type == VALKEY_REPLY_INTEGER) &&
+                        (reply->element[i]->element[1]->type == VALKEY_REPLY_INTEGER) &&
+                        (reply->element[i]->element[2]->type == VALKEY_REPLY_ARRAY) &&
                         (reply->element[i]->element[2]->elements >= 2) &&
-                        (reply->element[i]->element[2]->element[0]->type == REDIS_REPLY_STRING) &&
-                        (reply->element[i]->element[2]->element[1]->type == REDIS_REPLY_INTEGER)) {
+                        (reply->element[i]->element[2]->element[0]->type == VALKEY_REPLY_STRING) &&
+                        (reply->element[i]->element[2]->element[1]->type == VALKEY_REPLY_INTEGER)) {
                         // Extract slot data.
                         int start = reply->element[i]->element[0]->integer;
                         int end = reply->element[i]->element[1]->integer;
 
                         // Check slot data.
-                        if ((start >= 0) && (start < NREDIS_CLUSTER_SLOTS) &&
-                            (end >= 0) && (end < NREDIS_CLUSTER_SLOTS)) {
+                        if ((start >= 0) && (start < NVALKEY_CLUSTER_SLOTS) &&
+                            (end >= 0) && (end < NVALKEY_CLUSTER_SLOTS)) {
                             unsafe_add_slot(
                                 ctx, db, config, start, end,
                                 reply->element[i]->element[2]->element[0]->str,
                                 reply->element[i]->element[2]->element[1]->integer,
-                                REDIS_SERVER_MASTER_ROLE);
+                                VALKEY_SERVER_MASTER_ROLE);
 
                             // Extract slave servers data.
                             for (int j = 3; j < reply->element[i]->elements; j++) {
-                                if ((reply->element[i]->element[j]->type == REDIS_REPLY_ARRAY) &&
+                                if ((reply->element[i]->element[j]->type == VALKEY_REPLY_ARRAY) &&
                                     (reply->element[i]->element[j]->elements >= 2) &&
-                                    (reply->element[i]->element[j]->element[0]->type == REDIS_REPLY_STRING) &&
-                                    (reply->element[i]->element[j]->element[1]->type == REDIS_REPLY_INTEGER)) {
+                                    (reply->element[i]->element[j]->element[0]->type == VALKEY_REPLY_STRING) &&
+                                    (reply->element[i]->element[j]->element[1]->type == VALKEY_REPLY_INTEGER)) {
                                     unsafe_add_slot(
                                         ctx, db, config, start, end,
                                         reply->element[i]->element[j]->element[0]->str,
                                         reply->element[i]->element[j]->element[1]->integer,
-                                        REDIS_SERVER_SLAVE_ROLE);
+                                        VALKEY_SERVER_SLAVE_ROLE);
                                 }
                             }
                         }
@@ -307,10 +307,10 @@ unsafe_discover_slots_aux(
                 done = 1;
                 db->stats.cluster.discoveries.total++;
             } else {
-                REDIS_LOG_ERROR(ctx,
+                VALKEY_LOG_ERROR(ctx,
                     "Failed to execute cluster discovery command (error=%d, db=%s, server=%s): %s",
                     rcontext->err, db->name, server->location.raw,
-                    HIREDIS_ERRSTR(rcontext, reply));
+                    VALKEY_ERRSTR(rcontext, reply));
                 db->stats.cluster.discoveries.failed++;
             }
 
@@ -323,11 +323,11 @@ unsafe_discover_slots_aux(
         }
     } else {
         if (rcontext != NULL) {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to establish cluster discovery connection (error=%d, db=%s, server=%s): %s",
-                rcontext->err, db->name, server->location.raw, HIREDIS_ERRSTR(rcontext));
+                rcontext->err, db->name, server->location.raw, VALKEY_ERRSTR(rcontext));
         } else {
-            REDIS_LOG_ERROR(ctx,
+            VALKEY_LOG_ERROR(ctx,
                 "Failed to establish cluster discovery connection (db=%s, server=%s)",
                 db->name, server->location.raw);
         }
@@ -336,7 +336,7 @@ unsafe_discover_slots_aux(
 
     // Release context.
     if (rcontext != NULL) {
-        redisFree(rcontext);
+        valkeyFree(rcontext);
     }
 
     // Done.
@@ -345,7 +345,7 @@ unsafe_discover_slots_aux(
 
 static void
 unsafe_discover_slots(
-    VRT_CTX, struct vmod_redis_db *db, vcl_state_t *config, redis_server_t *server)
+    VRT_CTX, struct vmod_valkey_db *db, vcl_state_t *config, valkey_server_t *server)
 {
     // Assertions.
     Lck_AssertHeld(&config->mutex);
@@ -354,11 +354,11 @@ unsafe_discover_slots(
     // Contact already known servers and try to fetch the slots-servers mapping.
     // Always use the provided server instance in the first place.
     if (!unsafe_discover_slots_aux(ctx, db, config, server)) {
-        for (unsigned iweight = 0; iweight < NREDIS_SERVER_WEIGHTS; iweight++) {
-            for (enum REDIS_SERVER_ROLE irole = 0; irole < NREDIS_SERVER_ROLES; irole++) {
-                redis_server_t *iserver;
+        for (unsigned iweight = 0; iweight < NVALKEY_SERVER_WEIGHTS; iweight++) {
+            for (enum VALKEY_SERVER_ROLE irole = 0; irole < NVALKEY_SERVER_ROLES; irole++) {
+                valkey_server_t *iserver;
                 VTAILQ_FOREACH(iserver, &db->servers[iweight][irole], list) {
-                    CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
+                    CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
                     if ((iserver != server) &&
                         (unsafe_discover_slots_aux(ctx, db, config, iserver))) {
                         // Lists of servers are only modified on a successful
@@ -413,7 +413,7 @@ get_cluster_slot(const char *key)
 
     // No '{'? Hash the whole key. This is the base case.
     if (s == keylen) {
-        return crc16(key, keylen) & (NREDIS_CLUSTER_SLOTS - 1);
+        return crc16(key, keylen) & (NVALKEY_CLUSTER_SLOTS - 1);
     }
 
     // '{' found? Check if we have the corresponding '}'.
@@ -425,10 +425,10 @@ get_cluster_slot(const char *key)
 
     // No '}' or nothing between {}? Hash the whole key.
     if ((e == keylen) || (e == s + 1)) {
-        return crc16(key, keylen) & (NREDIS_CLUSTER_SLOTS - 1);
+        return crc16(key, keylen) & (NVALKEY_CLUSTER_SLOTS - 1);
     }
 
     // If we are here there is both a '{' and a '}' on its right. Hash
     // what is in the middle between '{' and '}'.
-    return crc16(key + s + 1, e - s - 1) & (NREDIS_CLUSTER_SLOTS - 1);
+    return crc16(key + s + 1, e - s - 1) & (NVALKEY_CLUSTER_SLOTS - 1);
 }

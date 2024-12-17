@@ -6,20 +6,20 @@ server s1 {
 } -repeat 1 -start
 
 varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={""},
             period=0,
             connection_timeout=500,
             command_timeout=0);
 
-        new db = redis.db(
-            location="${redis_master1_ip}:${redis_master1_port}",
+        new db = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_port}",
             type=cluster,
             connection_timeout=500,
             connection_ttl=0,
@@ -31,11 +31,11 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
             sickness_ttl=0,
             ignore_slaves=false,
             max_cluster_hops=16);
-        db.add_server("${redis_master2_ip}:${redis_master2_port}", cluster);
-        db.add_server("${redis_master3_ip}:${redis_master3_port}", cluster);
+        db.add_server("${valkey_master2_ip}:${valkey_master2_port}", cluster);
+        db.add_server("${valkey_master3_ip}:${valkey_master3_port}", cluster);
 
-        new master1 = redis.db(
-            location="${redis_master1_ip}:${redis_master1_port}",
+        new master1 = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_port}",
             type=master,
             connection_timeout=500,
             connection_ttl=0,
@@ -47,8 +47,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
             sickness_ttl=0,
             ignore_slaves=false,
             max_cluster_hops=0);
-        new master2 = redis.db(
-            location="${redis_master2_ip}:${redis_master2_port}",
+        new master2 = valkey.db(
+            location="${valkey_master2_ip}:${valkey_master2_port}",
             type=master,
             connection_timeout=500,
             connection_ttl=0,
@@ -65,7 +65,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
     sub vcl_deliver {
         # Set key in master1.
         db.command("SET");
-        db.push("${redis_key_in_master1}");
+        db.push("${valkey_key_in_master1}");
         db.push("hello");
         db.execute(true);
         if (db.reply_is_status()) {
@@ -77,7 +77,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # Get the key (should internally handle the ASK redirection).
         db.command("GET");
-        db.push("${redis_key_in_master1}");
+        db.push("${valkey_key_in_master1}");
         db.execute(true);
         if (db.reply_is_string()) {
             set resp.http.Reply-2 = db.get_string_reply();
@@ -97,7 +97,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
         # Get the key's containing slot.
         master1.command("CLUSTER");
         master1.push("KEYSLOT");
-        master1.push("${redis_key_in_master1}");
+        master1.push("${valkey_key_in_master1}");
         master1.execute(true);
         if (master1.reply_is_integer()) {
             set resp.http.Migration-Slot = master1.get_integer_reply();
@@ -108,7 +108,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
         master1.push("NODES");
         master1.execute(true);
         if (master1.reply_is_string()) {
-            set resp.http.Migration-NodeOrig = regsub(master1.get_reply(), "(?s)^(?:.+\n)?([0-9a-f]+) ${redis_master1_ip}:${redis_master1_port}(?:@\d+)? .*$", "\1");
+            set resp.http.Migration-NodeOrig = regsub(master1.get_reply(), "(?s)^(?:.+\n)?([0-9a-f]+) ${valkey_master1_ip}:${valkey_master1_port}(?:@\d+)? .*$", "\1");
             if (resp.http.Migration-NodeOrig !~ "[0-9a-f]+") {
                 unset resp.http.Migration-NodeOrig;
             }
@@ -119,7 +119,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
         master1.push("NODES");
         master1.execute(true);
         if (master1.reply_is_string()) {
-            set resp.http.Migration-NodeDest = regsub(master1.get_reply(), "(?s)^(?:.+\n)?([0-9a-f]+) ${redis_master2_ip}:${redis_master2_port}(?:@\d+)? .*$", "\1");
+            set resp.http.Migration-NodeDest = regsub(master1.get_reply(), "(?s)^(?:.+\n)?([0-9a-f]+) ${valkey_master2_ip}:${valkey_master2_port}(?:@\d+)? .*$", "\1");
             if (resp.http.Migration-NodeDest !~ "[0-9a-f]+") {
                 unset resp.http.Migration-NodeDest;
             }
@@ -149,9 +149,9 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # Migrate key.
         master1.command("MIGRATE");
-        master1.push("${redis_master2_ip}");
-        master1.push("${redis_master2_port}");
-        master1.push("${redis_key_in_master1}");
+        master1.push("${valkey_master2_ip}");
+        master1.push("${valkey_master2_port}");
+        master1.push("${valkey_key_in_master1}");
         master1.push("0");
         master1.push("0");
         master1.execute(true);
@@ -161,7 +161,7 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
         # Check that the original node replies with an ASK redirection.
         master1.command("GET");
-        master1.push("${redis_key_in_master1}");
+        master1.push("${valkey_key_in_master1}");
         master1.execute(true);
         if (master1.reply_is_error()) {
             if (master1.get_error_reply() ~ "^ASK ") {

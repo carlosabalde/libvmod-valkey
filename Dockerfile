@@ -50,21 +50,12 @@ RUN git clone https://github.com/varnishcache/varnish-cache.git /tmp/varnish \
     && ldconfig
 
 RUN cd /tmp \
-    && wget --no-check-certificate https://github.com/redis/hiredis/archive/v1.2.0.zip -O hiredis-1.2.0.zip \
-    && unzip hiredis-*.zip \
-    && rm -f hiredis-*.zip \
-    && cd hiredis* \
-    && make USE_SSL=1 \
-    && make USE_SSL=1 PREFIX='/usr/local' install \
-    && ldconfig
-
-RUN cd /tmp \
-    && wget --no-check-certificate http://download.redis.io/releases/redis-7.4.1.tar.gz \
-    && tar zxvf redis-*.tar.gz \
-    && rm -f redis-*.tar.gz \
-    && cd redis-* \
-    && make BUILD_TLS=yes \
-    && make BUILD_TLS=yes PREFIX='/usr/local' install \
+    && wget --no-check-certificate https://github.com/valkey-io/libvalkey/archive/c370ca99f22ef7cc6ad83aaaf287020090327a44.zip -O libvalkey-c370ca99f22ef7cc6ad83aaaf287020090327a44.zip \
+    && unzip libvalkey-*.zip \
+    && rm -f libvalkey-*.zip \
+    && cd libvalkey* \
+    && make USE_TLS=1 \
+    && make USE_TLS=1 PREFIX='/usr/local' install \
     && ldconfig
 
 RUN cd /tmp \

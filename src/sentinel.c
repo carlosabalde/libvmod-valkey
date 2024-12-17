@@ -7,12 +7,12 @@
 #include <unistd.h>
 #include <string.h>
 #include <pthread.h>
-#include <hiredis/hiredis.h>
+#include <valkey/valkey.h>
 #ifdef TLS_ENABLED
-#include <hiredis/hiredis_ssl.h>
+#include <valkey/tls.h>
 #endif
-#include <hiredis/async.h>
-#include <hiredis/adapters/libev.h>
+#include <valkey/async.h>
+#include <valkey/adapters/libev.h>
 #include <arpa/inet.h>
 
 #include "cache/cache.h"
@@ -32,7 +32,7 @@ struct server {
     unsigned port;
 
     // Most recent discovered properties.
-    enum REDIS_SERVER_ROLE role;
+    enum VALKEY_SERVER_ROLE role;
     unsigned down;
 
     // Sentinel responsible of the last change to the previous properties.
@@ -52,7 +52,7 @@ struct sentinel {
     unsigned port;
 
     // Non-blocking connection.
-    redisAsyncContext *context;
+    valkeyAsyncContext *context;
 
     // State reference, useful when processing Pub/Sub messages.
     struct state *state;
@@ -74,9 +74,9 @@ struct state {
     unsigned period;
     struct timeval connection_timeout;
     struct timeval command_timeout;
-    enum REDIS_PROTOCOL protocol;
+    enum VALKEY_PROTOCOL protocol;
 #ifdef TLS_ENABLED
-    redisSSLContext *tls_ssl_ctx;
+    valkeyTLSContext *tls_ssl_ctx;
 #endif
     const char *password;
 
@@ -92,16 +92,16 @@ static void *sentinel_loop(void *object);
 
 static struct state *new_state(
     vcl_state_t *config, unsigned period, struct timeval connection_timeout,
-    struct timeval command_timeout, enum REDIS_PROTOCOL protocol,
+    struct timeval command_timeout, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    redisSSLContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ssl_ctx,
 #endif
     const char *password);
 static void free_state(struct state *state);
 
 static void unsafe_set_locations(struct state *state, const char *locations);
 
-static void parse_sentinel_notification(struct sentinel *sentinel, redisReply *reply);
+static void parse_sentinel_notification(struct sentinel *sentinel, valkeyReply *reply);
 
 static void discover_servers(struct state *state);
 
@@ -117,11 +117,11 @@ unsafe_sentinel_start(vcl_state_t *config)
     AZ(config->sentinels.active);
 
 #ifdef TLS_ENABLED
-    // Create Redis SSL context.
-    redisSSLContext *tls_ssl_ctx = NULL;
+    // Create Valkey TLS context.
+    valkeyTLSContext *tls_ssl_ctx = NULL;
     if (config->sentinels.tls) {
-        redisSSLContextError ssl_error;
-        tls_ssl_ctx = redisCreateSSLContext(
+        valkeyTLSContextError ssl_error;
+        tls_ssl_ctx = valkeyCreateTLSContext(
             config->sentinels.tls_cafile,
             config->sentinels.tls_capath,
             config->sentinels.tls_certfile,
@@ -129,9 +129,9 @@ unsafe_sentinel_start(vcl_state_t *config)
             config->sentinels.tls_sni,
             &ssl_error);
         if (tls_ssl_ctx == NULL) {
-            REDIS_LOG_ERROR(NULL,
-                "Failed to create SSL context: %s",
-                redisSSLContextGetError(ssl_error));
+            VALKEY_LOG_ERROR(NULL,
+                "Failed to create TLS context: %s",
+                valkeyTLSContextGetError(ssl_error));
             return;
         }
     }
@@ -195,75 +195,75 @@ unsafe_sentinel_stop(vcl_state_t *config)
  *****************************************************************************/
 
 static void
-connectCallback(const redisAsyncContext *context, int status)
+connectCallback(const valkeyAsyncContext *context, int status)
 {
-    if (status != REDIS_OK) {
+    if (status != VALKEY_OK) {
         struct sentinel *sentinel;
         CAST_OBJ_NOTNULL(sentinel, context->data, SENTINEL_MAGIC);
 
         sentinel->context = NULL;
 
-        REDIS_LOG_ERROR(NULL,
+        VALKEY_LOG_ERROR(NULL,
             "Failed to establish Sentinel connection (error=%d, status=%d, sentinel=%s:%d): %s",
             context->err, status, sentinel->host, sentinel->port,
-            HIREDIS_ERRSTR(context));
+            VALKEY_ERRSTR(context));
     }
 }
 
 static void
-disconnectCallback(const redisAsyncContext *context, int status)
+disconnectCallback(const valkeyAsyncContext *context, int status)
 {
     struct sentinel *sentinel;
     CAST_OBJ_NOTNULL(sentinel, context->data, SENTINEL_MAGIC);
 
     sentinel->context = NULL;
 
-    if (status != REDIS_OK) {
-        REDIS_LOG_ERROR(NULL,
+    if (status != VALKEY_OK) {
+        VALKEY_LOG_ERROR(NULL,
             "Sentinel connection lost (error=%d, status=%d, sentinel=%s:%d): %s",
             context->err, status, sentinel->host, sentinel->port,
-            HIREDIS_ERRSTR(context));
+            VALKEY_ERRSTR(context));
     }
 }
 
 static void
-authorizeCallback(redisAsyncContext *context, void *r, void *s)
+authorizeCallback(valkeyAsyncContext *context, void *r, void *s)
 {
-    redisReply *reply = r;
+    valkeyReply *reply = r;
 
     struct sentinel *sentinel;
     CAST_OBJ_NOTNULL(sentinel, s, SENTINEL_MAGIC);
 
     if (reply == NULL ||
-        reply->type != REDIS_REPLY_STATUS ||
+        reply->type != VALKEY_REPLY_STATUS ||
         strcmp(reply->str, "OK") != 0) {
-        REDIS_LOG_ERROR(NULL,
+        VALKEY_LOG_ERROR(NULL,
             "Failed to authenticate Sentinel connection (error=%d, sentinel=%s:%d): %s",
             context->err, sentinel->host, sentinel->port,
-            HIREDIS_ERRSTR(context, reply));
+            VALKEY_ERRSTR(context, reply));
     }
 }
 
 static void
-helloCallback(redisAsyncContext *context, void *r, void *s)
+helloCallback(valkeyAsyncContext *context, void *r, void *s)
 {
-    redisReply *reply = r;
+    valkeyReply *reply = r;
 
     struct sentinel *sentinel;
     CAST_OBJ_NOTNULL(sentinel, s, SENTINEL_MAGIC);
 
     if (reply == NULL ||
-        (reply->type != REDIS_REPLY_ARRAY &&
-         RESP3_SWITCH(reply->type != REDIS_REPLY_MAP, 1))) {
-        REDIS_LOG_ERROR(NULL,
+        (reply->type != VALKEY_REPLY_ARRAY &&
+         RESP3_SWITCH(reply->type != VALKEY_REPLY_MAP, 1))) {
+        VALKEY_LOG_ERROR(NULL,
             "Failed to negotiate protocol in Sentinel connection (error=%d, sentinel=%s:%d): %s",
             context->err, sentinel->host, sentinel->port,
-            HIREDIS_ERRSTR(context, reply));
+            VALKEY_ERRSTR(context, reply));
     }
 }
 
 static void
-subscribeCallback(redisAsyncContext *context, void *reply, void *s)
+subscribeCallback(valkeyAsyncContext *context, void *reply, void *s)
 {
     struct sentinel *sentinel;
     CAST_OBJ_NOTNULL(sentinel, s, SENTINEL_MAGIC);
@@ -281,7 +281,7 @@ sentinel_loop(void *object)
 
     // Log event.
     Lck_Lock(&state->config->mutex);
-    REDIS_LOG_INFO(NULL,
+    VALKEY_LOG_INFO(NULL,
         "Sentinel thread started (locations=%s, period=%d)",
         state->config->sentinels.locations,
         state->config->sentinels.period);
@@ -328,73 +328,73 @@ sentinel_loop(void *object)
         VTAILQ_FOREACH(isentinel, &state->sentinels, list) {
             CHECK_OBJ_NOTNULL(isentinel, SENTINEL_MAGIC);
             if (isentinel->context == NULL) {
-                isentinel->context = redisAsyncConnect(isentinel->host, isentinel->port);
+                isentinel->context = valkeyAsyncConnect(isentinel->host, isentinel->port);
                 if ((isentinel->context != NULL) && (!isentinel->context->err)) {
 #ifdef TLS_ENABLED
                     if (state->tls_ssl_ctx != NULL &&
-                        redisInitiateSSLWithContext(&isentinel->context->c, state->tls_ssl_ctx) != REDIS_OK) {
-                        REDIS_LOG_ERROR(NULL,
+                        valkeyInitiateTLSWithContext(&isentinel->context->c, state->tls_ssl_ctx) != VALKEY_OK) {
+                        VALKEY_LOG_ERROR(NULL,
                             "Failed to secure asynchronous Sentinel connection (error=%d, sentinel=%s:%d): %s",
                             isentinel->context->c.err, isentinel->host, isentinel->port,
-                            HIREDIS_ERRSTR((&isentinel->context->c)));
-                        redisAsyncFree(isentinel->context);
+                            VALKEY_ERRSTR((&isentinel->context->c)));
+                        valkeyAsyncFree(isentinel->context);
                         isentinel->context = NULL;
                     }
 #endif
                     if (isentinel->context != NULL) {
                         isentinel->context->data = isentinel;
-                        redisLibevAttach(loop, isentinel->context);
-                        redisAsyncSetConnectCallback(isentinel->context, connectCallback);
-                        redisAsyncSetDisconnectCallback(isentinel->context, disconnectCallback);
+                        valkeyLibevAttach(loop, isentinel->context);
+                        valkeyAsyncSetConnectCallback(isentinel->context, connectCallback);
+                        valkeyAsyncSetDisconnectCallback(isentinel->context, disconnectCallback);
                         if (state->password != NULL) {
-                            if (redisAsyncCommand(
+                            if (valkeyAsyncCommand(
                                     isentinel->context, authorizeCallback, isentinel,
-                                    "AUTH %s", state->password) != REDIS_OK) {
-                                REDIS_LOG_ERROR(NULL,
+                                    "AUTH %s", state->password) != VALKEY_OK) {
+                                VALKEY_LOG_ERROR(NULL,
                                     "Failed to enqueue asynchronous Sentinel AUTH command (error=%d, sentinel=%s:%d): %s",
                                     isentinel->context->err, isentinel->host,
-                                    isentinel->port, HIREDIS_ERRSTR(isentinel->context));
-                                redisAsyncFree(isentinel->context);
+                                    isentinel->port, VALKEY_ERRSTR(isentinel->context));
+                                valkeyAsyncFree(isentinel->context);
                                 isentinel->context = NULL;
                             }
                         }
                     }
                     if (isentinel->context != NULL) {
-                        if (state->protocol != REDIS_PROTOCOL_DEFAULT) {
-                            if (redisAsyncCommand(
+                        if (state->protocol != VALKEY_PROTOCOL_DEFAULT) {
+                            if (valkeyAsyncCommand(
                                     isentinel->context, helloCallback, isentinel,
-                                    "HELLO %d", state->protocol) != REDIS_OK) {
-                                REDIS_LOG_ERROR(NULL,
+                                    "HELLO %d", state->protocol) != VALKEY_OK) {
+                                VALKEY_LOG_ERROR(NULL,
                                     "Failed to enqueue asynchronous Sentinel HELLO command (error=%d, sentinel=%s:%d): %s",
                                     isentinel->context->err, isentinel->host,
-                                    isentinel->port, HIREDIS_ERRSTR(isentinel->context));
-                                redisAsyncFree(isentinel->context);
+                                    isentinel->port, VALKEY_ERRSTR(isentinel->context));
+                                valkeyAsyncFree(isentinel->context);
                                 isentinel->context = NULL;
                             }
                         }
                     }
                     if (isentinel->context != NULL) {
-                        if (redisAsyncCommand(
+                        if (valkeyAsyncCommand(
                                 isentinel->context, subscribeCallback, isentinel,
-                                SUBSCRIPTION_COMMAND) != REDIS_OK) {
-                            REDIS_LOG_ERROR(NULL,
+                                SUBSCRIPTION_COMMAND) != VALKEY_OK) {
+                            VALKEY_LOG_ERROR(NULL,
                                 "Failed to enqueue asynchronous Sentinel subscription command (error=%d, sentinel=%s:%d): %s",
                                 isentinel->context->err, isentinel->host,
-                                isentinel->port, HIREDIS_ERRSTR(isentinel->context));
-                            redisAsyncFree(isentinel->context);
+                                isentinel->port, VALKEY_ERRSTR(isentinel->context));
+                            valkeyAsyncFree(isentinel->context);
                             isentinel->context = NULL;
                         }
                     }
                 } else {
                     if (isentinel->context != NULL) {
-                        REDIS_LOG_ERROR(NULL,
+                        VALKEY_LOG_ERROR(NULL,
                             "Failed to establish Sentinel connection (error=%d, sentinel=%s:%d): %s",
                             isentinel->context->err, isentinel->host,
-                            isentinel->port, HIREDIS_ERRSTR(isentinel->context));
-                        redisAsyncFree(isentinel->context);
+                            isentinel->port, VALKEY_ERRSTR(isentinel->context));
+                        valkeyAsyncFree(isentinel->context);
                         isentinel->context = NULL;
                     } else {
-                        REDIS_LOG_ERROR(NULL,
+                        VALKEY_LOG_ERROR(NULL,
                             "Failed to establish Sentinel connection (sentinel=%s:%d)",
                             isentinel->host, isentinel->port);
                     }
@@ -422,7 +422,7 @@ sentinel_loop(void *object)
 
     // Log event.
     Lck_Lock(&state->config->mutex);
-    REDIS_LOG_INFO(NULL,
+    VALKEY_LOG_INFO(NULL,
         "Sentinel thread stopped (locations=%s, period=%d)",
         state->config->sentinels.locations,
         state->config->sentinels.period);
@@ -441,7 +441,7 @@ sentinel_loop(void *object)
 static struct server *
 new_server(
     struct sentinel *sentinel, const char *host, unsigned port,
-    enum REDIS_SERVER_ROLE role, unsigned down)
+    enum VALKEY_SERVER_ROLE role, unsigned down)
 {
     struct server *result;
     ALLOC_OBJ(result, SERVER_MAGIC);
@@ -468,7 +468,7 @@ free_server(struct server *server)
     server->host = NULL;
     server->port = 0;
 
-    server->role = REDIS_SERVER_TBD_ROLE;
+    server->role = VALKEY_SERVER_TBD_ROLE;
     server->down = 0;
 
     server->sentinel = NULL;
@@ -504,7 +504,7 @@ free_sentinel(struct sentinel *sentinel)
     sentinel->port = 0;
 
     if (sentinel->context != NULL) {
-        redisAsyncFree(sentinel->context);
+        valkeyAsyncFree(sentinel->context);
         sentinel->context = NULL;
     }
 
@@ -516,9 +516,9 @@ free_sentinel(struct sentinel *sentinel)
 static struct state *
 new_state(
     vcl_state_t *config, unsigned period, struct timeval connection_timeout,
-    struct timeval command_timeout, enum REDIS_PROTOCOL protocol,
+    struct timeval command_timeout, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    redisSSLContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ssl_ctx,
 #endif
     const char *password)
 {
@@ -568,10 +568,10 @@ free_state(struct state *state)
     state->period = 0;
     state->connection_timeout = (struct timeval){ 0 };
     state->command_timeout = (struct timeval){ 0 };
-    state->protocol = REDIS_PROTOCOL_DEFAULT;
+    state->protocol = VALKEY_PROTOCOL_DEFAULT;
 #ifdef TLS_ENABLED
     if (state->tls_ssl_ctx != NULL) {
-        redisFreeSSLContext(state->tls_ssl_ctx);
+        valkeyFreeTLSContext(state->tls_ssl_ctx);
         state->tls_ssl_ctx = NULL;
     }
 #endif
@@ -661,7 +661,7 @@ unsafe_set_locations(struct state *state, const char *locations)
         }
 
         // Log error.
-        REDIS_LOG_ERROR(NULL,
+        VALKEY_LOG_ERROR(NULL,
             "Got error while parsing Sentinels (error=%d, locations=%s)",
             error, locations);
     }
@@ -670,7 +670,7 @@ unsafe_set_locations(struct state *state, const char *locations)
 static void
 store_sentinel_reply(
     struct sentinel *sentinel, const char *host, unsigned port,
-    enum REDIS_SERVER_ROLE role, int down)
+    enum VALKEY_SERVER_ROLE role, int down)
 {
     // Initializations.
     struct server *server = NULL;
@@ -701,17 +701,17 @@ store_sentinel_reply(
 }
 
 static void
-parse_sentinel_notification(struct sentinel *sentinel, redisReply *reply)
+parse_sentinel_notification(struct sentinel *sentinel, valkeyReply *reply)
 {
     // Check reply format.
     if ((reply != NULL) &&
-        ((reply->type == REDIS_REPLY_ARRAY ||
-          RESP3_SWITCH(reply->type == REDIS_REPLY_PUSH, 0))) &&
+        ((reply->type == VALKEY_REPLY_ARRAY ||
+          RESP3_SWITCH(reply->type == VALKEY_REPLY_PUSH, 0))) &&
         (reply->elements == 4) &&
-        (reply->element[0]->type == REDIS_REPLY_STRING) &&
+        (reply->element[0]->type == VALKEY_REPLY_STRING) &&
         (strcmp(reply->element[0]->str, "pmessage") == 0) &&
-        (reply->element[2]->type == REDIS_REPLY_STRING) &&
-        (reply->element[3]->type == REDIS_REPLY_STRING)) {
+        (reply->element[2]->type == VALKEY_REPLY_STRING) &&
+        (reply->element[3]->type == VALKEY_REPLY_STRING)) {
         // Initializations.
         char *ctx, *ptr;
         const char *event = reply->element[2]->str;
@@ -727,13 +727,13 @@ parse_sentinel_notification(struct sentinel *sentinel, redisReply *reply)
             (strcmp(event, "+odown") == 0) ||
             (strcmp(event, "-odown") == 0)) {
             // Extract <instance type>.
-            enum REDIS_SERVER_ROLE role;
+            enum VALKEY_SERVER_ROLE role;
             ptr = strtok_r(payload, " ", &ctx);
             if (ptr != NULL) {
                 if (strcmp(ptr, "master") == 0) {
-                    role = REDIS_SERVER_MASTER_ROLE;
+                    role = VALKEY_SERVER_MASTER_ROLE;
                 } else if (strcmp(ptr, "slave") == 0) {
-                    role = REDIS_SERVER_SLAVE_ROLE;
+                    role = VALKEY_SERVER_SLAVE_ROLE;
                 } else {
                     goto stop;
                 }
@@ -815,10 +815,10 @@ parse_sentinel_notification(struct sentinel *sentinel, redisReply *reply)
             // Register / update server.
             store_sentinel_reply(
                 sentinel, old_ip, old_port,
-                REDIS_SERVER_SLAVE_ROLE, -1);
+                VALKEY_SERVER_SLAVE_ROLE, -1);
             store_sentinel_reply(
                 sentinel, new_ip, new_port,
-                REDIS_SERVER_MASTER_ROLE, 0);
+                VALKEY_SERVER_MASTER_ROLE, 0);
         }
 stop:
 
@@ -830,7 +830,7 @@ stop:
 static void
 parse_sentinel_discovery(
     struct state *state, struct sentinel *sentinel,
-    redisReply *reply, const char ***master_names)
+    valkeyReply *reply, const char ***master_names)
 {
     // Initializations.
     if (master_names != NULL) {
@@ -838,7 +838,7 @@ parse_sentinel_discovery(
     }
 
     // Check reply format.
-    if (reply->type == REDIS_REPLY_ARRAY) {
+    if (reply->type == VALKEY_REPLY_ARRAY) {
         // Initializations.
         unsigned imaster_names = 0;
         if (master_names != NULL) {
@@ -850,19 +850,19 @@ parse_sentinel_discovery(
         // Check reply contents.
         const char *name, *value;
         for (int i = 0; i < reply->elements; i++) {
-            if (reply->element[i]->type == REDIS_REPLY_ARRAY ||
-                RESP3_SWITCH(reply->element[i]->type == REDIS_REPLY_MAP, 0)) {
+            if (reply->element[i]->type == VALKEY_REPLY_ARRAY ||
+                RESP3_SWITCH(reply->element[i]->type == VALKEY_REPLY_MAP, 0)) {
                 // Initializations.
                 const char *master_name = NULL;
                 const char *host = NULL;
                 unsigned port = 0;
-                enum REDIS_SERVER_ROLE role = REDIS_SERVER_TBD_ROLE;
+                enum VALKEY_SERVER_ROLE role = VALKEY_SERVER_TBD_ROLE;
                 unsigned down = 0;
 
                 // Look for relevant properties.
                 for (int j = 0; j + 1 < reply->element[i]->elements; j += 2) {
-                    if ((reply->element[i]->element[j]->type == REDIS_REPLY_STRING) &&
-                        (reply->element[i]->element[j+1]->type == REDIS_REPLY_STRING)) {
+                    if ((reply->element[i]->element[j]->type == VALKEY_REPLY_STRING) &&
+                        (reply->element[i]->element[j+1]->type == VALKEY_REPLY_STRING)) {
                         name = reply->element[i]->element[j]->str;
                         value = reply->element[i]->element[j+1]->str;
                         if (strcmp(name, "name") == 0) {
@@ -873,10 +873,10 @@ parse_sentinel_discovery(
                             port = atoi(value);
                         } else if (strcmp(name, "flags") == 0) {
                             if (strstr(value, "master") != NULL) {
-                                role = REDIS_SERVER_MASTER_ROLE;
+                                role = VALKEY_SERVER_MASTER_ROLE;
                             }
                             if (strstr(value, "slave") != NULL) {
-                                role = REDIS_SERVER_SLAVE_ROLE;
+                                role = VALKEY_SERVER_SLAVE_ROLE;
                             }
                             if ((strstr(value, "s_down") != NULL) ||
                                 (strstr(value, "o_down") != NULL)) {
@@ -896,13 +896,13 @@ parse_sentinel_discovery(
                 // been found.
                 if ((host != NULL) &&
                     (port > 0) &&
-                    (role != REDIS_SERVER_TBD_ROLE)) {
+                    (role != VALKEY_SERVER_TBD_ROLE)) {
                     store_sentinel_reply(sentinel, host, port, role, down);
                 }
             }
         }
     } else {
-        REDIS_LOG_ERROR(NULL,
+        VALKEY_LOG_ERROR(NULL,
             "Unexpected Sentinel discovery command reply (type=%d, sentinel=%s:%d)",
             reply->type, sentinel->host, sentinel->port);
     }
@@ -918,28 +918,28 @@ discover_servers(struct state *state)
         CHECK_OBJ_NOTNULL(isentinel, SENTINEL_MAGIC);
 
         // Create context.
-        redisContext *rcontext;
+        valkeyContext *rcontext;
         if ((state->connection_timeout.tv_sec > 0) ||
             (state->connection_timeout.tv_usec > 0)) {
-            rcontext = redisConnectWithTimeout(
+            rcontext = valkeyConnectWithTimeout(
                 isentinel->host,
                 isentinel->port,
                 state->connection_timeout);
         } else {
-            rcontext = redisConnect(
+            rcontext = valkeyConnect(
                 isentinel->host,
                 isentinel->port);
         }
         if (rcontext == NULL) {
-            REDIS_LOG_ERROR(NULL,
+            VALKEY_LOG_ERROR(NULL,
                 "Failed to establish Sentinel connection (sentinel=%s:%d)",
                 isentinel->host, isentinel->port);
         } else if (rcontext->err) {
-            REDIS_LOG_ERROR(NULL,
+            VALKEY_LOG_ERROR(NULL,
                 "Failed to establish Sentinel connection (error=%d, sentinel=%s:%d): %s",
                 rcontext->err, isentinel->host,
-                isentinel->port, HIREDIS_ERRSTR(rcontext));
-            redisFree(rcontext);
+                isentinel->port, VALKEY_ERRSTR(rcontext));
+            valkeyFree(rcontext);
             rcontext = NULL;
         }
 
@@ -947,12 +947,12 @@ discover_servers(struct state *state)
         // Setup TLS.
         if ((rcontext != NULL) &&
             (state->tls_ssl_ctx != NULL) &&
-            (redisInitiateSSLWithContext(rcontext, state->tls_ssl_ctx) != REDIS_OK)) {
-            REDIS_LOG_ERROR(NULL,
+            (valkeyInitiateTLSWithContext(rcontext, state->tls_ssl_ctx) != VALKEY_OK)) {
+            VALKEY_LOG_ERROR(NULL,
                 "Failed to secure Sentinel connection (error=%d, sentinel=%s:%d): %s",
                 rcontext->err, isentinel->host, isentinel->port,
-                HIREDIS_ERRSTR(rcontext));
-            redisFree(rcontext);
+                VALKEY_ERRSTR(rcontext));
+            valkeyFree(rcontext);
             rcontext = NULL;
         }
 #endif
@@ -960,34 +960,34 @@ discover_servers(struct state *state)
         // Send 'AUTH' command.
         if ((rcontext != NULL) &&
             (state->password != NULL)) {
-            redisReply *reply = redisCommand(rcontext, "AUTH %s", state->password);
+            valkeyReply *reply = valkeyCommand(rcontext, "AUTH %s", state->password);
             if ((rcontext->err) ||
                 (reply == NULL) ||
-                (reply->type != REDIS_REPLY_STATUS) ||
+                (reply->type != VALKEY_REPLY_STATUS) ||
                 (strcmp(reply->str, "OK") != 0)) {
-                REDIS_LOG_ERROR(NULL,
+                VALKEY_LOG_ERROR(NULL,
                     "Failed to execute Sentinel AUTH command (error=%d, sentinel=%s:%d): %s",
                     rcontext->err, isentinel->host, isentinel->port,
-                    HIREDIS_ERRSTR(rcontext, reply));
-                redisFree(rcontext);
+                    VALKEY_ERRSTR(rcontext, reply));
+                valkeyFree(rcontext);
                 rcontext = NULL;
             }
         }
 
         // Send 'HELLO' command.
         if ((rcontext != NULL) &&
-            (state->protocol != REDIS_PROTOCOL_DEFAULT)) {
-            redisReply *reply = redisCommand(rcontext, "HELLO %d", state->protocol);
+            (state->protocol != VALKEY_PROTOCOL_DEFAULT)) {
+            valkeyReply *reply = valkeyCommand(rcontext, "HELLO %d", state->protocol);
             if ((rcontext->err) ||
                 (reply == NULL) ||
-                (reply->type != REDIS_REPLY_ARRAY &&
-                 RESP3_SWITCH(reply->type != REDIS_REPLY_MAP, 1))
+                (reply->type != VALKEY_REPLY_ARRAY &&
+                 RESP3_SWITCH(reply->type != VALKEY_REPLY_MAP, 1))
                ) {
-                REDIS_LOG_ERROR(NULL,
+                VALKEY_LOG_ERROR(NULL,
                     "Failed to execute Sentinel HELLO command (error=%d, sentinel=%s:%d): %s",
                     rcontext->err, isentinel->host, isentinel->port,
-                    HIREDIS_ERRSTR(rcontext, reply));
-                redisFree(rcontext);
+                    VALKEY_ERRSTR(rcontext, reply));
+                valkeyFree(rcontext);
                 rcontext = NULL;
             }
         }
@@ -995,9 +995,9 @@ discover_servers(struct state *state)
         // Check context.
         if (rcontext != NULL) {
             // Set command execution timeout.
-            int tr = redisSetTimeout(rcontext, state->command_timeout);
-            if (tr != REDIS_OK) {
-                REDIS_LOG_ERROR(NULL,
+            int tr = valkeySetTimeout(rcontext, state->command_timeout);
+            if (tr != VALKEY_OK) {
+                VALKEY_LOG_ERROR(NULL,
                     "Failed to set Sentinel command execution timeout (error=%d, sentinel=%s:%d)",
                     tr, isentinel->host, isentinel->port);
             }
@@ -1005,7 +1005,7 @@ discover_servers(struct state *state)
             // Send 'SENTINEL masters' command in order to get a list of
             // monitored masters and their state.
             const char **master_names = NULL;
-            redisReply *reply1 = redisCommand(rcontext, "SENTINEL masters");
+            valkeyReply *reply1 = valkeyCommand(rcontext, "SENTINEL masters");
             if (reply1 != NULL) {
                 parse_sentinel_discovery(state, isentinel, reply1, &master_names);
 
@@ -1015,21 +1015,21 @@ discover_servers(struct state *state)
                 if (master_names != NULL) {
                     for (int i = 0; master_names[i] != NULL ; i++) {
                         if (!rcontext->err) {
-                            redisReply *reply2 = redisCommand(rcontext, "SENTINEL slaves %s", master_names[i]);
+                            valkeyReply *reply2 = valkeyCommand(rcontext, "SENTINEL slaves %s", master_names[i]);
                             if (reply2 != NULL) {
                                 parse_sentinel_discovery(state, isentinel, reply2, NULL);
                                 freeReplyObject(reply2);
                             } else {
-                                REDIS_LOG_ERROR(NULL,
+                                VALKEY_LOG_ERROR(NULL,
                                     "Failed to execute Sentinel slaves command (error=%s, master_name=%s, sentinel=%s:%d): %s",
                                     rcontext->err, master_names[i], isentinel->host, isentinel->port,
-                                    HIREDIS_ERRSTR(rcontext));
+                                    VALKEY_ERRSTR(rcontext));
                             }
                         } else {
-                            REDIS_LOG_ERROR(NULL,
+                            VALKEY_LOG_ERROR(NULL,
                                 "Failed to reuse Sentinel connection (error=%d, sentinel=%s:%d): %s",
                                 rcontext->err, isentinel->host,
-                                isentinel->port, HIREDIS_ERRSTR(rcontext));
+                                isentinel->port, VALKEY_ERRSTR(rcontext));
                             break;
                         }
                     }
@@ -1038,20 +1038,20 @@ discover_servers(struct state *state)
 
                 freeReplyObject(reply1);
             } else {
-                REDIS_LOG_ERROR(NULL,
+                VALKEY_LOG_ERROR(NULL,
                     "Failed to execute Sentinel masters command (error=%d, sentinel=%s:%d): %s",
                     rcontext->err, isentinel->host, isentinel->port,
-                    HIREDIS_ERRSTR(rcontext));
+                    VALKEY_ERRSTR(rcontext));
             }
 
             // Release context.
-            redisFree(rcontext);
+            valkeyFree(rcontext);
         }
     }
 }
 
 static void
-unsafe_update_dbs_aux(struct state *state, redis_server_t *server)
+unsafe_update_dbs_aux(struct state *state, valkey_server_t *server)
 {
     // Assertions.
     Lck_AssertHeld(&state->config->mutex);
@@ -1074,7 +1074,7 @@ unsafe_update_dbs_aux(struct state *state, redis_server_t *server)
                     &server->db->servers[server->weight][server->role],
                     server,
                     list);
-                REDIS_LOG_INFO(NULL,
+                VALKEY_LOG_INFO(NULL,
                     "Server role updated (db=%s, server=%s, sentinel=%s:%d, role=%d)",
                     server->db->name, server->location.raw,
                     is->sentinel->host, is->sentinel->port,
@@ -1086,7 +1086,7 @@ unsafe_update_dbs_aux(struct state *state, redis_server_t *server)
             if (server->sickness.exp <= now) {
                 if (is->down) {
                     server->sickness.exp = UINT_MAX;
-                    REDIS_LOG_INFO(NULL,
+                    VALKEY_LOG_INFO(NULL,
                         "Server sickness tag set (db=%s, server=%s, sentinel=%s:%d)",
                         server->db->name, server->location.raw,
                         is->sentinel->host, is->sentinel->port);
@@ -1094,7 +1094,7 @@ unsafe_update_dbs_aux(struct state *state, redis_server_t *server)
             } else {
                 if (!is->down) {
                     server->sickness.exp = now;
-                    REDIS_LOG_INFO(NULL,
+                    VALKEY_LOG_INFO(NULL,
                         "Server sickness tag cleared (db=%s, server=%s, sentinel=%s:%d)",
                         server->db->name, server->location.raw,
                         is->sentinel->host, is->sentinel->port);
@@ -1119,12 +1119,12 @@ unsafe_update_dbs(struct state *state)
         CHECK_OBJ_NOTNULL(idb, DATABASE_MAGIC);
         if (!idb->db->cluster.enabled) {
             Lck_Lock(&idb->db->mutex);
-            for (unsigned iweight = 0; iweight < NREDIS_SERVER_WEIGHTS; iweight++) {
-                for (enum REDIS_SERVER_ROLE irole = 0; irole < NREDIS_SERVER_ROLES; irole++) {
-                    redis_server_t *iserver, *iserver_tmp;
+            for (unsigned iweight = 0; iweight < NVALKEY_SERVER_WEIGHTS; iweight++) {
+                for (enum VALKEY_SERVER_ROLE irole = 0; irole < NVALKEY_SERVER_ROLES; irole++) {
+                    valkey_server_t *iserver, *iserver_tmp;
                     VTAILQ_FOREACH_SAFE(iserver, &(idb->db->servers[iweight][irole]), list, iserver_tmp) {
-                        CHECK_OBJ_NOTNULL(iserver, REDIS_SERVER_MAGIC);
-                        if (iserver->location.type == REDIS_SERVER_LOCATION_HOST_TYPE) {
+                        CHECK_OBJ_NOTNULL(iserver, VALKEY_SERVER_MAGIC);
+                        if (iserver->location.type == VALKEY_SERVER_LOCATION_HOST_TYPE) {
                             unsafe_update_dbs_aux(state, iserver);
                         }
                     }

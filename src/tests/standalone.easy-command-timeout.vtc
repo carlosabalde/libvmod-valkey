@@ -6,20 +6,20 @@ server s1 {
 } -repeat 1 -start
 
 varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={""},
             period=0,
             connection_timeout=500,
             command_timeout=0);
 
-        new db = redis.db(
-            location="${redis_master1_ip}:${redis_master1_port}",
+        new db = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_port}",
             type=master,
             connection_timeout=500,
             connection_ttl=0,

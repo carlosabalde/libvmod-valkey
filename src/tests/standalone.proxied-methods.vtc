@@ -6,20 +6,20 @@ server s1 {
 } -repeat 1 -start
 
 varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
-    import ${vmod_redis};
+    import ${vmod_valkey};
 
     sub vcl_init {
-        redis.subnets(
+        valkey.subnets(
             masks={""});
 
-        redis.sentinels(
+        valkey.sentinels(
             locations={""},
             period=0,
             connection_timeout=500,
             command_timeout=0);
 
-        new master1 = redis.db(
-            location="${redis_master1_ip}:${redis_master1_port}",
+        new master1 = valkey.db(
+            location="${valkey_master1_ip}:${valkey_master1_port}",
             type=master,
             connection_timeout=500,
             connection_ttl=0,
@@ -32,8 +32,8 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
             ignore_slaves=false,
             max_cluster_hops=0);
 
-        new master2 = redis.db(
-            location="${redis_master2_ip}:${redis_master2_port}",
+        new master2 = valkey.db(
+            location="${valkey_master2_ip}:${valkey_master2_port}",
             type=master,
             connection_timeout=500,
             connection_ttl=0,
@@ -49,80 +49,80 @@ varnish v1 -arg "-p vsl_reclen=1024" -vcl+backend {
 
     sub vcl_deliver {
         # SET (master1) -> GET (master1) -> GET (master2).
-        redis.use("master1");
-        redis.command("SET");
-        redis.push("foo");
-        redis.push("Hello world!");
-        redis.execute(true);
+        valkey.use("master1");
+        valkey.command("SET");
+        valkey.push("foo");
+        valkey.push("Hello world!");
+        valkey.execute(true);
 
-        redis.command("GET");
-        redis.push("foo");
-        redis.execute(true);
-        set resp.http.Reply-1 = redis.get_reply();
+        valkey.command("GET");
+        valkey.push("foo");
+        valkey.execute(true);
+        set resp.http.Reply-1 = valkey.get_reply();
 
-        redis.command("GET", db="master2");
-        redis.push("foo", db="master2");
-        redis.execute(true, db="master2");
-        set resp.http.Reply-2 = redis.get_reply(db="master2");
+        valkey.command("GET", db="master2");
+        valkey.push("foo", db="master2");
+        valkey.execute(true, db="master2");
+        set resp.http.Reply-2 = valkey.get_reply(db="master2");
 
         # SET (master2) -> GET (master2) -> GET (master1).
-        redis.use("master2");
-        redis.command("SET");
-        redis.push("bar");
-        redis.push("Hello world!");
-        redis.execute(true);
+        valkey.use("master2");
+        valkey.command("SET");
+        valkey.push("bar");
+        valkey.push("Hello world!");
+        valkey.execute(true);
 
-        redis.command("GET");
-        redis.push("bar");
-        redis.execute(true);
-        set resp.http.Reply-3 = redis.get_reply();
+        valkey.command("GET");
+        valkey.push("bar");
+        valkey.execute(true);
+        set resp.http.Reply-3 = valkey.get_reply();
 
-        redis.command("GET", db="master1");
-        redis.push("bar", db="master1");
-        redis.execute(true, db="master1");
-        set resp.http.Reply-4 = redis.get_reply(db="master1");
+        valkey.command("GET", db="master1");
+        valkey.push("bar", db="master1");
+        valkey.execute(true, db="master1");
+        set resp.http.Reply-4 = valkey.get_reply(db="master1");
 
         # same, with easy_execute
         # SET (master1) -> GET (master1) -> GET (master2).
-        redis.use("master1");
-        redis.easy_execute("SET", "baz", "42");
+        valkey.use("master1");
+        valkey.easy_execute("SET", "baz", "42");
 
-        redis.easy_execute("GET", "baz");
-        set resp.http.Reply-easy-1 = redis.get_reply();
+        valkey.easy_execute("GET", "baz");
+        set resp.http.Reply-easy-1 = valkey.get_reply();
 
-        redis.easy_execute("GET", "baz", db="master2", master = true);
-        set resp.http.Reply-easy-2 = redis.get_reply(db="master2");
+        valkey.easy_execute("GET", "baz", db="master2", master = true);
+        set resp.http.Reply-easy-2 = valkey.get_reply(db="master2");
 
         # SET (master2) -> GET (master2) -> GET (master1).
-        redis.use("master2");
-        redis.easy_execute("SET", "qux", "42");
+        valkey.use("master2");
+        valkey.easy_execute("SET", "qux", "42");
 
-        redis.command("GET");
-        redis.easy_execute("GET", "qux");
-        set resp.http.Reply-easy-3 = redis.get_reply();
+        valkey.command("GET");
+        valkey.easy_execute("GET", "qux");
+        set resp.http.Reply-easy-3 = valkey.get_reply();
 
-        redis.easy_execute("GET", "qux", db="master1");
-        set resp.http.Reply-easy-4 = redis.get_reply(db="master1");
+        valkey.easy_execute("GET", "qux", db="master1");
+        set resp.http.Reply-easy-4 = valkey.get_reply(db="master1");
 
 
         # Stats.
-        set resp.http.master1-stats = redis.stats(db="master1");
-        set resp.http.master1-servers-total = redis.counter("servers.total", db="master1");
-        redis.use("master1");
-        set resp.http.master1-connections-total = redis.counter("connections.total");
-        set resp.http.master1-connections-dropped-overflow = redis.counter("connections.dropped.overflow");
-        set resp.http.master1-commands-total = redis.counter("commands.total");
-        set resp.http.master1-commands-error = redis.counter("commands.error");
-        set resp.http.master1-commands-noscript = redis.counter("commands.noscript");
+        set resp.http.master1-stats = valkey.stats(db="master1");
+        set resp.http.master1-servers-total = valkey.counter("servers.total", db="master1");
+        valkey.use("master1");
+        set resp.http.master1-connections-total = valkey.counter("connections.total");
+        set resp.http.master1-connections-dropped-overflow = valkey.counter("connections.dropped.overflow");
+        set resp.http.master1-commands-total = valkey.counter("commands.total");
+        set resp.http.master1-commands-error = valkey.counter("commands.error");
+        set resp.http.master1-commands-noscript = valkey.counter("commands.noscript");
 
-        set resp.http.master2-stats = redis.stats(db="master2");
-        set resp.http.master2-servers-total = redis.counter("servers.total", db="master2");
-        redis.use("master2");
-        set resp.http.master2-connections-dropped-overflow = redis.counter("connections.dropped.overflow");
-        set resp.http.master2-connections-total = redis.counter("connections.total");
-        set resp.http.master2-commands-total = redis.counter("commands.total");
-        set resp.http.master2-commands-error = redis.counter("commands.error");
-        set resp.http.master2-commands-noscript = redis.counter("commands.noscript");
+        set resp.http.master2-stats = valkey.stats(db="master2");
+        set resp.http.master2-servers-total = valkey.counter("servers.total", db="master2");
+        valkey.use("master2");
+        set resp.http.master2-connections-dropped-overflow = valkey.counter("connections.dropped.overflow");
+        set resp.http.master2-connections-total = valkey.counter("connections.total");
+        set resp.http.master2-commands-total = valkey.counter("commands.total");
+        set resp.http.master2-commands-error = valkey.counter("commands.error");
+        set resp.http.master2-commands-noscript = valkey.counter("commands.noscript");
     }
 } -start
 

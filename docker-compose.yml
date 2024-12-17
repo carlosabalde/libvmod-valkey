@@ -1,20 +1,10 @@
----
-
-#
-# Cheat sheet:
-#   $ echo -e "UID=$(id -u)\nGID=$(id -g)" > .env
-#   $ docker compose up --build --detach
-#   $ docker compose exec --user dev --workdir /mnt/host dev bash
-#     $ ./autogen.sh
-#     $ ./configure
-#     $ make
-#     $ DB_ENGINE=valkey make check
+make check
 #   $ docker compose down --volumes --remove-orphans
 #
 
 version: '3.7'
 
-name: libvmod-redis-master
+name: libvmod-valkey-master
 
 services:
   dev:
