@@ -76,7 +76,7 @@ struct state {
     struct timeval command_timeout;
     enum VALKEY_PROTOCOL protocol;
 #ifdef TLS_ENABLED
-    valkeyTLSContext *tls_ssl_ctx;
+    valkeyTLSContext *tls_ctx;
 #endif
     const char *password;
 
@@ -94,7 +94,7 @@ static struct state *new_state(
     vcl_state_t *config, unsigned period, struct timeval connection_timeout,
     struct timeval command_timeout, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    valkeyTLSContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ctx,
 #endif
     const char *password);
 static void free_state(struct state *state);
@@ -118,20 +118,20 @@ unsafe_sentinel_start(vcl_state_t *config)
 
 #ifdef TLS_ENABLED
     // Create Valkey TLS context.
-    valkeyTLSContext *tls_ssl_ctx = NULL;
+    valkeyTLSContext *tls_ctx = NULL;
     if (config->sentinels.tls) {
-        valkeyTLSContextError ssl_error;
-        tls_ssl_ctx = valkeyCreateTLSContext(
+        valkeyTLSContextError tls_error;
+        tls_ctx = valkeyCreateTLSContext(
             config->sentinels.tls_cafile,
             config->sentinels.tls_capath,
             config->sentinels.tls_certfile,
             config->sentinels.tls_keyfile,
             config->sentinels.tls_sni,
-            &ssl_error);
-        if (tls_ssl_ctx == NULL) {
+            &tls_error);
+        if (tls_ctx == NULL) {
             VALKEY_LOG_ERROR(NULL,
                 "Failed to create TLS context: %s",
-                valkeyTLSContextGetError(ssl_error));
+                valkeyTLSContextGetError(tls_error));
             return;
         }
     }
@@ -145,7 +145,7 @@ unsafe_sentinel_start(vcl_state_t *config)
         config->sentinels.command_timeout,
         config->sentinels.protocol,
 #ifdef TLS_ENABLED
-        tls_ssl_ctx,
+        tls_ctx,
 #endif
         config->sentinels.password);
     unsafe_set_locations(state, config->sentinels.locations);
@@ -331,8 +331,8 @@ sentinel_loop(void *object)
                 isentinel->context = valkeyAsyncConnect(isentinel->host, isentinel->port);
                 if ((isentinel->context != NULL) && (!isentinel->context->err)) {
 #ifdef TLS_ENABLED
-                    if (state->tls_ssl_ctx != NULL &&
-                        valkeyInitiateTLSWithContext(&isentinel->context->c, state->tls_ssl_ctx) != VALKEY_OK) {
+                    if (state->tls_ctx != NULL &&
+                        valkeyInitiateTLSWithContext(&isentinel->context->c, state->tls_ctx) != VALKEY_OK) {
                         VALKEY_LOG_ERROR(NULL,
                             "Failed to secure asynchronous Sentinel connection (error=%d, sentinel=%s:%d): %s",
                             isentinel->context->c.err, isentinel->host, isentinel->port,
@@ -518,7 +518,7 @@ new_state(
     vcl_state_t *config, unsigned period, struct timeval connection_timeout,
     struct timeval command_timeout, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    valkeyTLSContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ctx,
 #endif
     const char *password)
 {
@@ -534,7 +534,7 @@ new_state(
     result->command_timeout = command_timeout;
     result->protocol = protocol;
 #ifdef TLS_ENABLED
-    result->tls_ssl_ctx = tls_ssl_ctx;
+    result->tls_ctx = tls_ctx;
 #endif
     if (password != NULL) {
         result->password = strdup(password);
@@ -570,9 +570,9 @@ free_state(struct state *state)
     state->command_timeout = (struct timeval){ 0 };
     state->protocol = VALKEY_PROTOCOL_DEFAULT;
 #ifdef TLS_ENABLED
-    if (state->tls_ssl_ctx != NULL) {
-        valkeyFreeTLSContext(state->tls_ssl_ctx);
-        state->tls_ssl_ctx = NULL;
+    if (state->tls_ctx != NULL) {
+        valkeyFreeTLSContext(state->tls_ctx);
+        state->tls_ctx = NULL;
     }
 #endif
     if (state->password != NULL) {
@@ -946,8 +946,8 @@ discover_servers(struct state *state)
 #ifdef TLS_ENABLED
         // Setup TLS.
         if ((rcontext != NULL) &&
-            (state->tls_ssl_ctx != NULL) &&
-            (valkeyInitiateTLSWithContext(rcontext, state->tls_ssl_ctx) != VALKEY_OK)) {
+            (state->tls_ctx != NULL) &&
+            (valkeyInitiateTLSWithContext(rcontext, state->tls_ctx) != VALKEY_OK)) {
             VALKEY_LOG_ERROR(NULL,
                 "Failed to secure Sentinel connection (error=%d, sentinel=%s:%d): %s",
                 rcontext->err, isentinel->host, isentinel->port,

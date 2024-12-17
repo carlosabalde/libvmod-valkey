@@ -220,7 +220,7 @@ new_vmod_valkey_db(
     unsigned connection_ttl, struct timeval command_timeout, unsigned max_command_retries,
     unsigned shared_connections, unsigned max_connections, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    valkeyTLSContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ctx,
 #endif
     const char *user, const char *password, unsigned sickness_ttl,
     unsigned ignore_slaves, unsigned clustered, unsigned max_cluster_hops)
@@ -249,7 +249,7 @@ new_vmod_valkey_db(
     result->max_connections = max_connections;
     result->protocol = protocol;
 #ifdef TLS_ENABLED
-    result->tls_ssl_ctx = tls_ssl_ctx;
+    result->tls_ctx = tls_ctx;
 #endif
     if (strlen(user) > 0) {
         result->user = strdup(user);
@@ -324,9 +324,9 @@ free_vmod_valkey_db(struct vmod_valkey_db *db)
     db->max_connections = 0;
     db->protocol = VALKEY_PROTOCOL_DEFAULT;
 #ifdef TLS_ENABLED
-    if (db->tls_ssl_ctx != NULL) {
-        valkeyFreeTLSContext(db->tls_ssl_ctx);
-        db->tls_ssl_ctx = NULL;
+    if (db->tls_ctx != NULL) {
+        valkeyFreeTLSContext(db->tls_ctx);
+        db->tls_ctx = NULL;
     }
 #endif
     if (db->user != NULL) {

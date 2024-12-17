@@ -139,7 +139,7 @@ struct vmod_valkey_db {
     unsigned max_connections;
     enum VALKEY_PROTOCOL protocol;
 #ifdef TLS_ENABLED
-    valkeyTLSContext *tls_ssl_ctx;
+    valkeyTLSContext *tls_ctx;
 #endif
     const char *user;
     const char *password;
@@ -419,8 +419,8 @@ extern vmod_state_t vmod_state;
 #ifdef TLS_ENABLED
 #define VALKEY_TLS(ctx, rcontext, db, message1, message2, ...) \
     do { \
-        if (db->tls_ssl_ctx != NULL && \
-            valkeyInitiateTLSWithContext(rcontext, db->tls_ssl_ctx) != VALKEY_OK) { \
+        if (db->tls_ctx != NULL && \
+            valkeyInitiateTLSWithContext(rcontext, db->tls_ctx) != VALKEY_OK) { \
             VALKEY_LOG_ERROR(ctx, \
                 message1 " (error=%d, " message2 "): %s", \
                 rcontext->err, ##__VA_ARGS__, VALKEY_ERRSTR(rcontext)); \
@@ -498,7 +498,7 @@ struct vmod_valkey_db *new_vmod_valkey_db(
     unsigned connection_ttl, struct timeval command_timeout, unsigned max_command_retries,
     unsigned shared_connections, unsigned max_connections, enum VALKEY_PROTOCOL protocol,
 #ifdef TLS_ENABLED
-    valkeyTLSContext *tls_ssl_ctx,
+    valkeyTLSContext *tls_ctx,
 #endif
     const char *user, const char *password, unsigned sickness_ttl,
     unsigned ignore_slaves, unsigned clustered, unsigned max_cluster_hops);
