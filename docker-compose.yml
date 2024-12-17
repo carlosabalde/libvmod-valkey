@@ -1,4 +1,14 @@
-make check
+---
+
+#
+# Cheat sheet:
+#   $ echo -e "UID=$(id -u)\nGID=$(id -g)" > .env
+#   $ docker compose up --build --detach
+#   $ docker compose exec --user dev --workdir /mnt/host dev bash
+#     $ ./autogen.sh
+#     $ ./configure
+#     $ make
+#     $ make check
 #   $ docker compose down --volumes --remove-orphans
 #
 
