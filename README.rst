@@ -181,8 +181,8 @@ Single server
         # LUA scripting.
         db.command("EVAL");
         db.push({"
-            redis.call('SET', KEYS[1], ARGV[1])
-            redis.call('SET', KEYS[2], ARGV[1])
+            server.call('SET', KEYS[1], ARGV[1])
+            server.call('SET', KEYS[2], ARGV[1])
         "});
         db.push("2");
         db.push("foo");
@@ -281,7 +281,7 @@ INSTALLATION
 
 The source tree is based on autotools to configure the building, and does also have the necessary bits in place to do functional unit tests using the varnishtest tool.
 
-**Beware this project contains multiples branches (master, 4.1, 4.0, etc.). Please, select the branch to be used depending on your Varnish Cache version (Varnish trunk → master, Varnish 4.1.x → 4.1, Varnish 4.0.x → 4.0, etc.).**
+**Beware this project contains multiples branches (master, 6.0, 7.6, etc.). Please, select the branch to be used depending on your Varnish Cache version (Varnish trunk → master, Varnish 6.0.x → 6.0, Varnish 7.6.x → 7.6, etc.).**
 
 Dependencies:
 
