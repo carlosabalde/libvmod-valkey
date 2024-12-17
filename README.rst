@@ -18,8 +18,6 @@ Highlights:
 * **Support for smart command execution**, selecting the destination server according with the preferred role (i.e. master or slave) and with distance and healthiness metrics collected during execution.
 * **Support for Valkey Sentinel**, allowing automatic discovery of sick / healthy servers and changes in their roles.
 
-Please, check out `the project wiki <https://github.com/carlosabalde/libvmod-valkey/wiki>`_ for some extra information and useful links.
-
 Looking for official support for this VMOD? Please, contact `Allenta Consulting <https://www.allenta.com>`_, a `Varnish Software Premium partner <https://www.varnish-software.com/partner/allenta-consulting>`_.
 
 SYNOPSIS
