@@ -1,5 +1,5 @@
 AC_PREREQ([2.68])
-AC_INIT([libvmod-valkey], [trunk], [], [vmod-valkey])
+AC_INIT([libvmod-valkey], [3.0], [], [vmod-valkey])
 AC_COPYRIGHT([Copyright (c) Carlos Abalde <carlos.abalde@gmail.com>])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -35,7 +35,7 @@ AC_ARG_WITH([rst2man],
 
 m4_ifndef([VARNISH_PREREQ], AC_MSG_ERROR([Need varnish.m4 -- see README.rst]))
 
-#VARNISH_PREREQ([5.0], [5.1])
+VARNISH_PREREQ([7.7], [7.8])
 VARNISH_VMODS([valkey])
 
 VMOD_TESTS="$(cd $srcdir/src && echo tests/*.vtc)"

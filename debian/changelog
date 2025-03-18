@@ -1,0 +1,11 @@
+libvmod-valkey (3.0-1) stable; urgency=low
+
+  * Migrated to Varnish Cache 7.7.x
+
+ -- Carlos Abalde <carlos.abalde@gmail.com>  Tue, 18 Mar 2025 16:00:00 +0100
+
+libvmod-valkey (2.0-1) stable; urgency=low
+
+  * Migrated to Varnish Cache 7.6.x
+
+ -- Carlos Abalde <carlos.abalde@gmail.com>  Fri, 13 Sep 2024 16:00:00 +0200
