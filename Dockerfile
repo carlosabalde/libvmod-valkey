@@ -53,7 +53,7 @@ RUN cd /tmp \
     && ldconfig
 
 RUN cd /tmp \
-    && wget --no-check-certificate https://github.com/valkey-io/libvalkey/archive/c370ca99f22ef7cc6ad83aaaf287020090327a44.zip -O libvalkey-c370ca99f22ef7cc6ad83aaaf287020090327a44.zip \
+    && wget --no-check-certificate https://github.com/valkey-io/libvalkey/archive/37812da4ac0910622b2c8d8c434bfb40ce40f679.zip -O libvalkey-37812da4ac0910622b2c8d8c434bfb40ce40f679.zip \
     && unzip libvalkey-*.zip \
     && rm -f libvalkey-*.zip \
     && cd libvalkey* \
@@ -62,7 +62,7 @@ RUN cd /tmp \
     && ldconfig
 
 RUN cd /tmp \
-    && wget --no-check-certificate https://github.com/valkey-io/valkey/archive/refs/tags/8.0.1.tar.gz -O valkey-8.0.1.tar.gz \
+    && wget --no-check-certificate https://github.com/valkey-io/valkey/archive/refs/tags/8.1.0.tar.gz -O valkey-8.1.0.tar.gz \
     && tar zxvf valkey-*.tar.gz \
     && rm -f valkey-*.tar.gz \
     && cd valkey-* \
