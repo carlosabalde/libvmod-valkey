@@ -195,7 +195,7 @@ unsafe_sentinel_stop(vcl_state_t *config)
  *****************************************************************************/
 
 static void
-connectCallback(const valkeyAsyncContext *context, int status)
+connectCallback(valkeyAsyncContext *context, int status)
 {
     if (status != VALKEY_OK) {
         struct sentinel *sentinel;
