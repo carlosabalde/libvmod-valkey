@@ -1,3 +1,8 @@
+.. admonition:: **🚨 Archival Notice**
+
+   This project started as a way to escape the whole Redis licensing drama after March 2024. We wanted to check out alternatives, and Valkey looked like the best option. But by May 2025, `Redis switched back to an open-source license <https://redis.io/blog/agplv3/>`_ from version 8.0 onwards, so although Valkey is a great initiative, this work isn't really needed anymore. Keeping separate VMODs for Redis and Valkey long-term is just too much effort. So unless there's actual interest in the VMOD, I'm planning to **pause development and archive the project** for now.
+
+---
 
 .. image:: https://github.com/carlosabalde/libvmod-valkey/actions/workflows/main.yml/badge.svg?branch=6.0
    :alt: GitHub Actions CI badge
